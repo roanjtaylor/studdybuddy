@@ -82,6 +82,17 @@ export default function Home() {
     void saveToDisk(next);
   }
 
+  // Opens the offline snapshot as a real file:// tab via the server, so it keeps
+  // working after the server shuts down. Falls back to the served URL if the
+  // open call fails for any reason.
+  async function openStaticPage() {
+    try {
+      const res = await fetch('/api/open-static', { method: 'POST' });
+      if (res.ok) return;
+    } catch {}
+    window.open('/studybuddy.html', '_blank', 'noreferrer');
+  }
+
   function dismissIntro() {
     localStorage.setItem(ONBOARDED_KEY, '1');
     setShowIntro(false);
@@ -163,12 +174,25 @@ export default function Home() {
               Find the canonical source. Skip the remixes.
             </p>
           </div>
-          <div className="flex shrink-0 items-center gap-3 text-xs text-[var(--muted)]">
-            <button onClick={() => setShowIntro(true)} className="hover:text-[var(--accent)]">
-              the principle
+          <div className="flex shrink-0 flex-col items-end gap-2 text-xs text-[var(--muted)]">
+            <div className="flex items-center gap-3">
+              <button onClick={() => setShowIntro(true)} className="hover:text-[var(--accent)]">
+                the principle
+              </button>
+              <span aria-hidden>·</span>
+              <SaveButton status={saveStatus} onSave={() => saveToDisk(library)} />
+            </div>
+            <button
+              onClick={openStaticPage}
+              title="Open a static, server-free copy as a local file (file://) — stays readable after the server shuts down"
+              className="inline-flex items-center gap-1 hover:text-[var(--accent)]"
+            >
+              View HTML
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M7 17 17 7" />
+                <path d="M7 7h10v10" />
+              </svg>
             </button>
-            <span aria-hidden>·</span>
-            <SaveButton status={saveStatus} onSave={() => saveToDisk(library)} />
           </div>
         </div>
       </header>

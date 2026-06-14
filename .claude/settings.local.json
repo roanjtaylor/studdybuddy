@@ -8,7 +8,10 @@
       "WebSearch",
       "WebFetch(domain:www.npmjs.com)",
       "Bash(npx tsc *)",
-      "Bash(claude --version)"
+      "Bash(claude --version)",
+      "Bash(node -e ' *)",
+      "Bash(node *)",
+      "Bash(git checkout *)"
     ]
   }
 }

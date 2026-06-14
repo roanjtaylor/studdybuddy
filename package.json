@@ -6,7 +6,8 @@
     "dev": "node scripts/dev.mjs",
     "dev:no-open": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "gen:static": "node scripts/gen-static.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",

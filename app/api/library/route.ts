@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { StudyCard } from '../../types';
+import { renderStaticHtml } from '../../../lib/staticPage.mjs';
 
 export const runtime = 'nodejs';
 
@@ -8,6 +9,10 @@ export const runtime = 'nodejs';
 // real file on disk (not just browser localStorage). Self-hosted/local only.
 const DATA_DIR = path.join(process.cwd(), 'data');
 const FILE = path.join(DATA_DIR, 'library.json');
+
+// A no-server, just-open-it snapshot of everything researched. Regenerated on
+// every save so the "View HTML" button always opens current content.
+const STATIC_FILE = path.join(process.cwd(), 'public', 'studybuddy.html');
 
 function extractCards(parsed: unknown): StudyCard[] {
   if (Array.isArray(parsed)) return parsed as StudyCard[];
@@ -37,6 +42,11 @@ export async function PUT(req: Request) {
       cards,
     };
     await fs.writeFile(FILE, JSON.stringify(payload, null, 2), 'utf8');
+
+    // Mirror the data into a standalone HTML page for offline reading.
+    await fs.mkdir(path.dirname(STATIC_FILE), { recursive: true });
+    await fs.writeFile(STATIC_FILE, renderStaticHtml(cards), 'utf8');
+
     return Response.json({ ok: true, count: cards.length });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'write failed';
