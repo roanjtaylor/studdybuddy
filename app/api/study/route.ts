@@ -1,13 +1,18 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
 
 export const maxDuration = 300;
 export const runtime = 'nodejs';
 
-const client = new Anthropic();
+// Powered by the Claude Agent SDK, authenticated with a Pro/Max subscription
+// (CLAUDE_CODE_OAUTH_TOKEN) instead of a billed API key. Usage draws from the
+// subscription's limits. This requires the Claude Code CLI on the host, so the
+// app is meant to run locally / self-hosted — it will NOT work on serverless.
+const MODEL = 'claude-opus-4-8';
 
 const SYSTEM = `You are a "source hunter." You help a self-directed learner skip the remix layer of the internet and go straight to the canonical primary sources for a topic.
 
-For the given topic, use the web_search tool to find 3 to 5 truly foundational sources.
+For the given topic, use the WebSearch tool to find 3 to 5 truly foundational sources.
 
 REJECT:
 - Listicles, "top 10" articles, beginner roundups, tutorial-of-tutorials
@@ -25,54 +30,15 @@ Also extract 3 to 5 FIRST PRINCIPLES — atomic core truths of the topic, the "S
 
 When your research is complete, you MUST call the submit_results tool exactly once with your findings. Do not write a prose answer — submit_results is the only valid way to deliver the final result.`;
 
-const submitTool = {
-  name: 'submit_results',
-  description:
-    'Submit the final study card. Call this exactly once after web research is complete. Do not return a prose answer.',
-  input_schema: {
-    type: 'object' as const,
-    properties: {
-      topic: { type: 'string' },
-      firstPrinciples: {
-        type: 'array',
-        items: { type: 'string' },
-        minItems: 3,
-        maxItems: 5,
-      },
-      sources: {
-        type: 'array',
-        minItems: 3,
-        maxItems: 5,
-        items: {
-          type: 'object',
-          properties: {
-            title: { type: 'string' },
-            author: { type: 'string' },
-            url: { type: 'string' },
-            kind: {
-              type: 'string',
-              enum: ['essay', 'paper', 'lecture', 'book', 'talk', 'other'],
-            },
-            timeCost: { type: 'string' },
-            whyCanonical: { type: 'string' },
-            blurb: { type: 'string' },
-            coreIdea: { type: 'string' },
-          },
-          required: [
-            'title',
-            'author',
-            'url',
-            'kind',
-            'timeCost',
-            'whyCanonical',
-            'blurb',
-            'coreIdea',
-          ],
-        },
-      },
-    },
-    required: ['topic', 'firstPrinciples', 'sources'],
-  },
+const sourceSchema = {
+  title: z.string(),
+  author: z.string(),
+  url: z.string(),
+  kind: z.enum(['essay', 'paper', 'lecture', 'book', 'talk', 'other']),
+  timeCost: z.string(),
+  whyCanonical: z.string(),
+  blurb: z.string(),
+  coreIdea: z.string(),
 };
 
 export async function POST(req: Request) {
@@ -82,42 +48,64 @@ export async function POST(req: Request) {
       return Response.json({ error: 'topic required' }, { status: 400 });
     }
 
-    const message = await client.messages.create({
-      model: 'claude-opus-4-7',
-      max_tokens: 8000,
-      system: SYSTEM,
+    // The model delivers its answer by calling submit_results. We capture the
+    // validated input here rather than parsing prose out of the transcript.
+    let card: {
+      topic: string;
+      firstPrinciples: string[];
+      sources: Array<Record<string, string>>;
+    } | null = null;
+
+    const studyServer = createSdkMcpServer({
+      name: 'study',
+      version: '1.0.0',
       tools: [
-        { type: 'web_search_20250305', name: 'web_search', max_uses: 8 } as never,
-        submitTool,
+        tool(
+          'submit_results',
+          'Submit the final study card. Call this exactly once after web research is complete. Do not return a prose answer.',
+          {
+            topic: z.string(),
+            firstPrinciples: z.array(z.string()).min(3).max(5),
+            sources: z.array(z.object(sourceSchema)).min(3).max(5),
+          },
+          async (args) => {
+            card = args;
+            return { content: [{ type: 'text', text: 'Study card recorded.' }] };
+          },
+        ),
       ],
-      messages: [{ role: 'user', content: `Topic: ${topic}` }],
     });
 
-    const submit = message.content.find(
-      (b) => b.type === 'tool_use' && b.name === 'submit_results',
-    );
+    let resultMeta: { is_error?: boolean; subtype?: string } | null = null;
 
-    if (submit && submit.type === 'tool_use') {
-      return Response.json(submit.input);
+    for await (const message of query({
+      prompt: `Topic: ${topic}`,
+      options: {
+        model: MODEL,
+        systemPrompt: SYSTEM,
+        mcpServers: { study: studyServer },
+        // Whitelist exactly two tools: web research + the structured submit.
+        // Everything else (file system, bash, etc.) stays disallowed.
+        allowedTools: ['WebSearch', 'mcp__study__submit_results'],
+        maxTurns: 20,
+        // Non-interactive: never block on a permission prompt.
+        permissionMode: 'bypassPermissions',
+      },
+    })) {
+      if (message.type === 'result') {
+        resultMeta = { is_error: message.is_error, subtype: message.subtype };
+      }
     }
 
-    const textBlocks = message.content
-      .filter((b) => b.type === 'text')
-      .map((b) => (b.type === 'text' ? b.text : ''))
-      .join('\n\n');
+    if (card) {
+      return Response.json(card);
+    }
 
-    console.error(
-      '[study] no submit_results tool call. stop_reason=',
-      message.stop_reason,
-      'text=',
-      textBlocks,
-    );
-
+    console.error('[study] no submit_results tool call. result=', resultMeta);
     return Response.json(
       {
         error: 'Model did not call submit_results',
-        stopReason: message.stop_reason,
-        raw: textBlocks.slice(0, 4000),
+        stopReason: resultMeta?.subtype ?? 'unknown',
       },
       { status: 502 },
     );
