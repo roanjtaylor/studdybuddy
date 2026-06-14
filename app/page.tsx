@@ -14,24 +14,72 @@ export default function Home() {
   const [library, setLibrary] = useState<StudyCard[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [showIntro, setShowIntro] = useState(false);
-  const [importMsg, setImportMsg] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [saveStatus, setSaveStatus] = useState<
+    'saved' | 'saving' | 'unsaved' | 'error'
+  >('saved');
 
   useEffect(() => {
+    let cancelled = false;
+
+    // Paint instantly from the browser cache…
+    let cards: StudyCard[] = [];
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       try {
-        const parsed: StudyCard[] = JSON.parse(raw);
-        setLibrary(parsed);
-        if (parsed[0]) setActiveId(parsed[0].id);
+        cards = JSON.parse(raw);
       } catch {}
     }
+    if (cards.length) {
+      setLibrary(cards);
+      if (cards[0]) setActiveId(cards[0].id);
+    }
+
+    // …then reconcile with the on-disk hard copy (the source of truth).
+    (async () => {
+      try {
+        const res = await fetch('/api/library');
+        if (!res.ok) return;
+        const data = await res.json();
+        const fileCards: StudyCard[] = Array.isArray(data.cards) ? data.cards : [];
+        if (cancelled) return;
+        if (fileCards.length) {
+          setLibrary(fileCards);
+          setActiveId((cur) => cur ?? fileCards[0]?.id ?? null);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(fileCards));
+        } else if (cards.length) {
+          // File is empty but the browser has data — migrate it to disk.
+          saveToDisk(cards);
+        }
+      } catch {}
+    })();
+
     if (!localStorage.getItem(ONBOARDED_KEY)) setShowIntro(true);
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  // Writes the hard copy to data/library.json. Like a Word document's save:
+  // it autosaves on every change, and the header reflects the live status.
+  async function saveToDisk(next: StudyCard[]) {
+    setSaveStatus('saving');
+    try {
+      const res = await fetch('/api/library', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cards: next }),
+      });
+      setSaveStatus(res.ok ? 'saved' : 'error');
+    } catch {
+      setSaveStatus('error');
+    }
+  }
 
   function persist(next: StudyCard[]) {
     setLibrary(next);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    setSaveStatus('unsaved');
+    void saveToDisk(next);
   }
 
   function dismissIntro() {
@@ -95,64 +143,10 @@ export default function Home() {
     if (activeId === id) setActiveId(next[0]?.id ?? null);
   }
 
-  function exportLibrary() {
-    const payload = {
-      schema: 'studybuddy.library.v1',
-      exportedAt: new Date().toISOString(),
-      cards: library,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: 'application/json',
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const stamp = new Date().toISOString().slice(0, 10);
-    a.href = url;
-    a.download = `studybuddy-${stamp}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  async function importLibrary(file: File) {
-    setImportMsg(null);
-    try {
-      const text = await file.text();
-      const parsed = JSON.parse(text);
-      const incoming: StudyCard[] = Array.isArray(parsed)
-        ? parsed
-        : Array.isArray(parsed.cards)
-          ? parsed.cards
-          : [];
-      if (incoming.length === 0) throw new Error('no cards found in file');
-
-      const byId = new Map<string, StudyCard>();
-      for (const c of library) byId.set(c.id, c);
-      let added = 0;
-      let skipped = 0;
-      for (const c of incoming) {
-        if (!c || typeof c !== 'object' || !c.topic || !Array.isArray(c.sources)) {
-          skipped++;
-          continue;
-        }
-        const id = c.id || crypto.randomUUID();
-        if (byId.has(id)) {
-          skipped++;
-          continue;
-        }
-        byId.set(id, { ...c, id });
-        added++;
-      }
-      const merged = [...byId.values()].sort(
-        (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
-      );
-      persist(merged);
-      if (!activeId && merged[0]) setActiveId(merged[0].id);
-      setImportMsg(`Imported ${added} card${added === 1 ? '' : 's'}${skipped ? `, skipped ${skipped}` : ''}.`);
-    } catch (err) {
-      setImportMsg(`Import failed: ${err instanceof Error ? err.message : 'invalid file'}`);
-    }
+  function rename(id: string, nextTopic: string) {
+    const t = nextTopic.trim();
+    if (!t) return;
+    persist(library.map((c) => (c.id === id ? { ...c, topic: t } : c)));
   }
 
   const active = library.find((c) => c.id === activeId) ?? null;
@@ -169,29 +163,12 @@ export default function Home() {
               Find the canonical source. Skip the remixes.
             </p>
           </div>
-          <div className="flex shrink-0 gap-3 text-xs text-[var(--muted)]">
+          <div className="flex shrink-0 items-center gap-3 text-xs text-[var(--muted)]">
             <button onClick={() => setShowIntro(true)} className="hover:text-[var(--accent)]">
               the principle
             </button>
             <span aria-hidden>·</span>
-            <button onClick={exportLibrary} className="hover:text-[var(--accent)]" disabled={library.length === 0}>
-              export
-            </button>
-            <span aria-hidden>·</span>
-            <button onClick={() => fileInputRef.current?.click()} className="hover:text-[var(--accent)]">
-              import
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="application/json,.json"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) importLibrary(f);
-                e.target.value = '';
-              }}
-            />
+            <SaveButton status={saveStatus} onSave={() => saveToDisk(library)} />
           </div>
         </div>
       </header>
@@ -213,6 +190,8 @@ export default function Home() {
         </button>
       </form>
 
+      {loading && <HuntingBar topic={topic.trim()} />}
+
       <p className="mb-10 text-xs text-[var(--muted)]">
         Asking about a <em>field of theory</em> (databases, transformers)? You're in the right place.
         Asking about a <em>product</em> (Supabase, Stripe)? Read its docs and use it instead — products are studied by using them.{' '}
@@ -220,12 +199,6 @@ export default function Home() {
           remind me why
         </button>
       </p>
-
-      {importMsg && (
-        <div className="mb-8 border border-[var(--line)] px-4 py-3 text-sm text-[var(--muted)]">
-          {importMsg}
-        </div>
-      )}
 
       {error && (
         <div className="mb-8 border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-500">
@@ -242,19 +215,16 @@ export default function Home() {
       )}
 
       {library.length > 0 && (
-        <nav className="mb-8 flex flex-wrap gap-2">
+        <nav className="mb-8 flex flex-wrap gap-3 pt-2">
           {library.map((c) => (
-            <button
+            <TopicChip
               key={c.id}
-              onClick={() => setActiveId(c.id)}
-              className={`border px-3 py-1 text-sm ${
-                c.id === activeId
-                  ? 'border-[var(--accent)] text-[var(--accent)]'
-                  : 'border-[var(--line)] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]'
-              }`}
-            >
-              {c.topic}
-            </button>
+              card={c}
+              active={c.id === activeId}
+              onSelect={() => setActiveId(c.id)}
+              onRename={(t) => rename(c.id, t)}
+              onDelete={() => remove(c.id)}
+            />
           ))}
         </nav>
       )}
@@ -263,10 +233,41 @@ export default function Home() {
 
       {!active && !loading && library.length === 0 && (
         <p className="text-[var(--muted)] italic">
-          Try a topic. Or <button onClick={() => fileInputRef.current?.click()} className="underline decoration-[var(--line)] underline-offset-4 hover:text-[var(--accent)]">import a saved library</button> to pick up where you left off.
+          Try a topic. Your library saves itself to{' '}
+          <code className="not-italic">data/library.json</code> in the project folder.
         </p>
       )}
     </main>
+  );
+}
+
+function SaveButton({
+  status,
+  onSave,
+}: {
+  status: 'saved' | 'saving' | 'unsaved' | 'error';
+  onSave: () => void;
+}) {
+  const label =
+    status === 'saving'
+      ? 'saving…'
+      : status === 'error'
+        ? 'save failed — retry'
+        : status === 'unsaved'
+          ? 'save'
+          : 'saved ✓';
+
+  return (
+    <button
+      onClick={onSave}
+      disabled={status === 'saving'}
+      title="Saved to data/library.json in the project folder"
+      className={`hover:text-[var(--accent)] disabled:opacity-60 ${
+        status === 'error' ? 'text-red-500' : ''
+      }`}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -400,6 +401,195 @@ function Intro({ onDismiss }: { onDismiss: () => void }) {
         </div>
       </div>
     </main>
+  );
+}
+
+function TopicChip({
+  card,
+  active,
+  onSelect,
+  onRename,
+  onDelete,
+}: {
+  card: StudyCard;
+  active: boolean;
+  onSelect: () => void;
+  onRename: (topic: string) => void;
+  onDelete: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(card.topic);
+  const [confirming, setConfirming] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  function commit() {
+    const t = value.trim();
+    if (t && t !== card.topic) onRename(t);
+    else setValue(card.topic);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center border border-[var(--accent)] px-3 py-1 text-sm text-[var(--accent)]">
+        <input
+          ref={inputRef}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commit();
+            } else if (e.key === 'Escape') {
+              setValue(card.topic);
+              setEditing(false);
+            }
+          }}
+          onBlur={commit}
+          size={Math.max(value.length, 4)}
+          className="bg-transparent outline-none"
+        />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className="group relative inline-flex items-center"
+      onMouseLeave={() => setConfirming(false)}
+    >
+      <button
+        onClick={onSelect}
+        className={`border px-3 py-1 text-sm ${
+          active
+            ? 'border-[var(--accent)] text-[var(--accent)]'
+            : 'border-[var(--line)] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]'
+        }`}
+      >
+        {card.topic}
+      </button>
+
+      <span className="pointer-events-none absolute -right-2 -top-2 flex gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+        {confirming ? (
+          <button
+            onClick={onDelete}
+            title="Click to confirm delete"
+            className="rounded-full border border-red-500 bg-[var(--bg)] px-2 text-[10px] font-medium leading-5 text-red-500 hover:bg-red-500 hover:text-white"
+          >
+            delete?
+          </button>
+        ) : (
+          <>
+            <button
+              onClick={() => {
+                setValue(card.topic);
+                setEditing(true);
+              }}
+              title="Rename"
+              aria-label="Rename topic"
+              className="grid h-5 w-5 place-items-center rounded-full border border-[var(--line)] bg-[var(--bg)] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
+            >
+              <PenIcon />
+            </button>
+            <button
+              onClick={() => setConfirming(true)}
+              title="Delete"
+              aria-label="Delete topic"
+              className="grid h-5 w-5 place-items-center rounded-full border border-[var(--line)] bg-[var(--bg)] text-[var(--muted)] hover:border-red-500 hover:text-red-500"
+            >
+              <XIcon />
+            </button>
+          </>
+        )}
+      </span>
+    </span>
+  );
+}
+
+function PenIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+const HUNT_LINES = [
+  'STUDYBUDDY used SEARCH!',
+  'Wading through the tall grass…',
+  'Dodging listicles and remixes…',
+  'A wild PRIMARY SOURCE appeared!',
+  "Reading the originator's own words…",
+  'Cross-checking the canon…',
+  'Distilling first principles…',
+];
+
+// The server returns in one shot at the very end, so there's no real progress
+// to report. We fake a satisfying, never-quite-finished crawl: the bar eases
+// toward ~95% and lands on 100% only when this component unmounts (= done).
+function HuntingBar({ topic }: { topic: string }) {
+  const [pct, setPct] = useState(8);
+  const [line, setLine] = useState(0);
+
+  useEffect(() => {
+    const fill = setInterval(() => {
+      setPct((p) => (p >= 95 ? 95 : p + Math.max(0.4, (95 - p) * 0.04)));
+    }, 180);
+    const cycle = setInterval(
+      () => setLine((l) => (l + 1) % HUNT_LINES.length),
+      2200,
+    );
+    return () => {
+      clearInterval(fill);
+      clearInterval(cycle);
+    };
+  }, []);
+
+  return (
+    <div className="mb-10">
+      <div className="pkmn-box">
+        <div className="mb-4 flex items-center gap-3">
+          <span className="pkmn-pokeball" aria-hidden />
+          <span className="pkmn-heading text-sm">
+            HUNTING{topic ? `: ${topic.toUpperCase()}` : '…'}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="pkmn-hplabel">SRC</span>
+          <div className="pkmn-hpbar">
+            <div className="pkmn-hpfill" style={{ width: `${pct}%` }} />
+          </div>
+          <span
+            className="pkmn-heading text-[0.6rem] tabular-nums"
+            style={{ color: '#ffde00', minWidth: '2.4em', textAlign: 'right' }}
+          >
+            {Math.round(pct)}%
+          </span>
+        </div>
+
+        <p className="pkmn-body mt-4" style={{ fontSize: '1.05rem' }}>
+          {HUNT_LINES[line]}
+        </p>
+        <p className="pkmn-heading mt-3 text-[0.55rem]" style={{ opacity: 0.65 }}>
+          SEARCHING THE WEB · THIS CAN TAKE A MINUTE · HANG TIGHT
+        </p>
+      </div>
+    </div>
   );
 }
 
