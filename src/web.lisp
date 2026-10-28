@@ -111,18 +111,18 @@
     (:html :lang "en"
       (:head (:meta :charset "utf-8")
              (:meta :name "viewport" :content "width=device-width, initial-scale=1")
-             (:title title " · studybuddy")
+             (:title title " · StudyBuddy")
              (:link :rel "stylesheet" :href "/static/style.css"))
       (:body
         (:nav :class "top"
-          (:a :class "brand" :href "/" "studybuddy")
-          (dolist (link *nav*) (html (:a :href (cdr link) (car link))))
-          (:a :class "ask-btn" :href *ask-href* "Ask"))
-        (when *crumbs*
-          (html (:p :class "crumbs"
-                  (:a :href "/" "studybuddy")
-                  (loop for (label . href) in *crumbs*
-                        do (html " / " (if href (html (:a :href href label)) (html (:span label))))))))
+          (:a :class "brand" :href "/" "StudyBuddy")
+          (dolist (link *nav*)
+            ;; The "/" is always laid out, just invisible off a crumb path, so links never shift.
+            (html (:span :class (if *crumbs* "sep" "sep hidden") "/")
+                  (:a :class (and *crumbs* "current") :href (cdr link) (car link))))
+          (loop for (label . href) in (cdr *crumbs*)
+                do (html (:span :class "sep" "/")
+                         (if href (html (:a :href href label)) (html (:span :class "current" label))))))
         (:main (dolist (p parts) (html (:raw p))))
         (:script :src "/static/map.js")))))
 

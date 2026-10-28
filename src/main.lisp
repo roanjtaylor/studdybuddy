@@ -13,3 +13,9 @@
 
 (defun stop ()
   (stop-server))
+
+(defun refresh (&key (port *port*) (open nil))
+  "Stop the server, reload the system from disk, start it again. Doesn't reopen the browser."
+  (stop)
+  (funcall (intern "QUICKLOAD" "QL") :studybuddy :silent t)
+  (funcall (intern "START" :studybuddy) :port port :open open))

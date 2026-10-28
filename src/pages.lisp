@@ -187,45 +187,34 @@
               (join "; " (mapcar (lambda (b) (str (car b) " → " (cdr b))) bad)))))))
 
 (defcomponent field-list ()
-  (html (:ul :class "plain fields"
+  (html (:ul
           (dolist (m (list-maps))
-            (let ((f (field-summary m)))
-              (html (:li (:a :href (field-url m) (:strong (getf f :title)))
-                         (:span :class "quiet small" " · " (getf f :ideas) " ideas, " (getf f :explained) " explained")
-                         (:div :class "quiet small" (getf f :compression)))))))))
+            (html (:li (:a :href (field-url m) (getf (field-summary m) :title))))))))
 
 ;;; ---- Home: what this is for ----------------------------------------------
 
 (defpage home "/" ()
-  (layout "studybuddy"
+  (layout "StudyBuddy"
     (html (:div :class "home"
-            (markdown (about-text))
-            (:details :class "edit"
-              (:summary "Edit this")
-              (:form :method "post" :action "/action/about"
-                (:textarea :name "text" :rows 18 :spellcheck "false" (about-text))
-                (:p (:button :type "submit" :class "primary" "Save"))))
-            (:section :class "panel"
-              (:h2 "Fields")
-              (field-list)
-              (:p (:a :href "/fields" "Start a new field →")))))))
+            (markdown (about-text))))))
 
 ;;; ---- Fields ---------------------------------------------------------------
 
-(defpage fields-page "/fields" ()
+(defpage fields-page "/fields" (new)
   (let ((*crumbs* '(("fields"))))
     (layout "Fields"
-      (html (:h1 "Fields")
-            (:p :class "tagline" "One map per field. Create it, let the model lay out the breadth, then shape it as you learn.")
-            (field-list)
-            (:section :class "panel"
-              (:h2 "New field")
-              (:p :class "quiet small" "Names a field; the model researches it with web search and lays out its core ideas breadth first, in prerequisite order. Slow (minutes). Everything it produces you can then reshape by asking.")
-              (:form :method "post" :action "/action/seed" :class "ask-form"
-                (:label "Field" (:input :type "text" :name "field" :required t :placeholder "e.g. Thermodynamics"))
-                (:label "What you already know, and why you want it"
-                        (:textarea :name "note" :rows 4))
-                (:button :type "submit" :class "primary" "Create field")))))))
+      (html (:div :class "heading"
+              (:h1 "Fields")
+              (:a :class "round" :href (if new "/fields" "/fields?new=1")
+                  :title (if new "Cancel" "New field")
+                  (if new "×" "+")))
+            (when new
+              (html (:form :method "post" :action "/action/seed" :class "ask-form"
+                      (:label "Field" (:input :type "text" :name "field" :required t :placeholder "e.g. Thermodynamics"))
+                      (:label "What you already know, and why you want it"
+                              (:textarea :name "note" :rows 4))
+                      (:button :type "submit" :class "primary" "Create field"))))
+            (field-list)))))
 
 ;;; ---- A field, or one group of it -----------------------------------------
 

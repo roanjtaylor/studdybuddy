@@ -36,7 +36,6 @@ html, body { margin: 0; }
 body {
   background: var(--bg);
   color: var(--fg);
-  font-family: Georgia, 'Times New Roman', serif;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
@@ -62,19 +61,11 @@ nav.top {
 }
 nav.top a { text-decoration: none; color: var(--muted); }
 nav.top a:hover { color: var(--fg); }
-nav.top .brand { color: var(--accent); font-weight: 600; }
-nav.top .ask-btn {
-  margin-left: auto; color: #fff; background: var(--accent); border-radius: 999px;
-  padding: .2rem .9rem; font-size: .85rem;
-}
-nav.top .ask-btn:hover { color: #fff; opacity: .9; }
-.crumbs {
-  max-width: 72rem; margin: 0 auto; padding: .6rem 1rem 0; font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: .8rem; color: var(--muted);
-}
-.crumbs a { text-decoration: none; }
-.crumbs a:hover { color: var(--fg); }
-.crumbs span { color: var(--fg); }
+nav.top .brand, nav.top .brand:hover { color: var(--fg); font-weight: 600; }
+nav.top { gap: .5rem; }
+nav.top .sep { color: var(--muted); }
+nav.top .sep.hidden { visibility: hidden; }
+nav.top .current { color: var(--fg); }
 a.tag { text-decoration: none; }
 
 .titlebar { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
@@ -83,8 +74,15 @@ a.tag { text-decoration: none; }
 
 ul.plain { list-style: none; padding: 0; margin: .25rem 0; }
 ul.plain li { margin: .3rem 0; }
-ul.fields li { margin: .6rem 0; }
-ul.fields a { text-decoration: none; border-bottom: 1px solid var(--line); }
+main > ul a { color: LinkText; text-decoration: underline; }
+.heading { display: flex; align-items: center; gap: .75rem; margin-bottom: .5rem; }
+.heading h1 { margin: 0; }
+a.round {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 1px solid var(--muted);
+  text-decoration: none; color: var(--muted); font-size: 1.15rem; line-height: 1;
+}
+a.round:hover { color: var(--fg); border-color: var(--fg); }
 
 /* Home: the articulation */
 .home .md { max-width: 44rem; font-size: 1.05rem; }
