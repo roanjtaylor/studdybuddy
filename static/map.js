@@ -1,5 +1,15 @@
-// Pan and zoom for the SVG map. Nothing else lives here.
+// Two things only: pan/zoom for the SVG map, and a "thinking…" state while a
+// form that talks to the model is in flight (Ctrl/Cmd+Enter submits a textarea).
 (function () {
+  document.querySelectorAll('form').forEach(function (form) {
+    form.addEventListener('submit', function () { form.classList.add('pending'); });
+    form.querySelectorAll('textarea').forEach(function (ta) {
+      ta.addEventListener('keydown', function (e) {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); form.requestSubmit(); }
+      });
+    });
+  });
+
   var svg = document.getElementById('map');
   var view = document.getElementById('viewport');
   if (!svg || !view) return;
@@ -43,7 +53,6 @@
     var factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
     var next = Math.min(4, Math.max(0.3, scale * factor));
     factor = next / scale;
-    // Zoom about the pointer: keep the point under the cursor fixed.
     var r = svg.getBoundingClientRect();
     var u = unit();
     var px = (e.clientX - r.left) * u, py = (e.clientY - r.top) * u;

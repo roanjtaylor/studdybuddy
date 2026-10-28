@@ -1,5 +1,5 @@
 (asdf:defsystem "studybuddy"
-  :description "StudyBuddy v2: a knowledge map where understanding is proven by writing."
+  :description "StudyBuddy: a map of each field's core ideas, with Claude inside it to answer, quiz and reshape the map as you learn."
   :author "Roan Taylor"
   :depends-on ("hunchentoot" "dexador" "com.inuoe.jzon" "uiop")
   :serial t

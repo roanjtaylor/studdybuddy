@@ -1,0 +1,1 @@
+[{"pkgName":"cl-user","text":"(studybuddy:start)"},{"pkgName":"cl-user","text":"(studybuddy:stop)"},{"pkgName":"cl-user","text":"(ql:quickload :studybuddy)"},{"pkgName":"cl-user","text":"(ql:quickload studybuddy)"},{"pkgName":"cl-user","text":"(studdybuddy:start)"}]

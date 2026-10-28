@@ -1,48 +1,53 @@
-;;;; L5a — Data. Node, Map, Attempt, Level, Card.
+;;;; L5a — Data. Field (a map), Node, Level, Attempt, Message, View.
 ;;;;
-;;;; A map is a read-only data file under data/maps/, one form per line:
+;;;; A field is one file under data/maps/, one form per line:
 ;;;;   (:map :id "computers" :title "Computers" :compression "…")
 ;;;;   (:group :id "switches" :compression "A switch can control another switch.")
-;;;;   (:node :id "flip-flop" :title "…" :compression "…" :why "…"
+;;;;   (:node :id "flip-flop" :title "…" :compression "…" :why "…" :notes "…"
 ;;;;          :group "switches" :prereqs ("logic-gates") :era 1918)
-;;;; Levels, attempts and cards live in their own stores so the map stays a clean,
-;;;; hand-editable description of the field. They are keyed by :ref = "map/node-id"
-;;;; so two maps may reuse a node id.
+;;;; The map is the shared object the learner and the model both edit. Everything
+;;;; the learner does (levels, attempts, conversation) lives in its own store keyed
+;;;; by :ref = "map/node-id" so the map file stays a clean description of the field.
 
 (in-package :studybuddy)
 
 (defstore attempt (:file "attempts.lisp" :key :id :append t))
+(defstore message (:file "messages.lisp" :key :id :append t))
 (defstore level   (:file "levels.lisp"   :key :ref))
-(defstore card    (:file "cards.lisp"    :key :ref))
-(defstore setting (:file "settings.lisp" :key :key))   ; (:key "intro-seen" :value t)
+(defstore setting (:file "settings.lisp" :key :key))
 
-(defvar *map* nil "The loaded map: (:id :title :compression :groups :nodes).")
+(defvar *map* nil "The current field: (:id :title :compression :groups :nodes). Bound per request.")
 (defvar *default-map* "computers")
-(defvar *scratch* (make-hash-table :test #'equal)
-  "Results shown but not stored (questions, quizzes, proposals), keyed by ref or map id.")
 
 (defparameter *level-names* #("not yet" "shaky" "can explain" "can teach"))
 
-;;; ---- Maps --------------------------------------------------------------
+;;; ---- Fields (maps) ----------------------------------------------------
 
 (defun map-file (name) (data-path (str "maps/" name ".lisp")))
 
 (defun tagged (forms tag)
   (loop for f in forms when (eq (car f) tag) collect (cdr f)))
 
+;; (read-map "computers") → the map plist, or NIL when there is no such file.
+(defun read-map (name)
+  (let ((forms (read-file-forms (map-file name))))
+    (when forms
+      (let ((head (first (tagged forms :map))))
+        (list :id name
+              :title (getf* head :title name)
+              :compression (getf head :compression)
+              :groups (tagged forms :group)
+              :nodes (mapcar #'normalise-node (tagged forms :node)))))))
+
 ;; (load-map "computers") → the map plist, now current.
 (defun load-map (name)
-  (let ((forms (read-file-forms (map-file name))))
-    (unless forms (error "No map file ~a" (map-file name)))
-    (let ((head (first (tagged forms :map))))
-      (setf *map* (list :id name
-                        :title (getf* head :title name)
-                        :compression (getf head :compression)
-                        :groups (tagged forms :group)
-                        :nodes (tagged forms :node))))))
+  (setf *map* (or (read-map name) (error "No map file ~a" (map-file name)))))
 
-(defun ensure-map ()
-  (or *map* (load-map *default-map*)))
+;; (select-map "computers") → the map, or NIL. Pages call this with the URL's name.
+(defun select-map (name)
+  (and (map-exists-p name) (load-map name)))
+
+(defun ensure-map () (or *map* (load-map *default-map*)))
 
 (defun map-id () (getf (ensure-map) :id))
 (defun map-title () (getf (ensure-map) :title))
@@ -55,27 +60,36 @@
 
 (defun map-exists-p (name) (probe-file (map-file name)))
 
+(defun map-forms (map)
+  (append (list (list :map :id (getf map :id) :title (getf map :title) :compression (getf map :compression)))
+          (mapcar (lambda (g) (cons :group g)) (getf map :groups))
+          (mapcar (lambda (n) (cons :node n)) (getf map :nodes))))
+
 ;; Write a whole new map file (seed). Refuses to overwrite.
 (defun write-map! (id title compression groups nodes)
   (when (map-exists-p id) (error "Map ~a already exists" id))
   (write-file-forms (map-file id)
-                    (append (list (list :map :id id :title title :compression compression))
-                            (mapcar (lambda (g) (cons :group g)) groups)
-                            (mapcar (lambda (n) (cons :node n)) nodes)))
+                    (map-forms (list :id id :title title :compression compression
+                                     :groups groups :nodes nodes)))
   id)
 
-;; Append one node to the current map's file and reload.
-(defun append-node! (node)
-  (when (find-node (getf node :id)) (error "Node ~a already in map" (getf node :id)))
-  (append-file-form (map-file (map-id)) (cons :node node))
-  (load-map (map-id))
-  node)
+;; Mirror the current map to its file after any edit.
+(defun save-map! ()
+  (write-file-forms (map-file (map-id)) (map-forms *map*))
+  *map*)
 
 ;; (check-map) → list of (node-id . missing-prereq-id); NIL when every id resolves.
 (defun check-map ()
   (loop for n in (map-nodes)
         append (loop for p in (getf n :prereqs)
                      unless (find-node p) collect (cons (getf n :id) p))))
+
+;; How many ideas, and how many explained (level ≥ 2), for a field not yet loaded.
+(defun field-summary (name)
+  (let* ((m (read-map name)) (nodes (getf m :nodes)))
+    (list :id name :title (getf m :title) :compression (getf m :compression)
+          :ideas (length nodes)
+          :explained (count-if (lambda (n) (>= (node-level (getf n :id) name) 2)) nodes))))
 
 ;;; ---- Nodes -------------------------------------------------------------
 
@@ -92,6 +106,14 @@
 (defun dependents (id)
   (remove-if-not (lambda (n) (member id (getf n :prereqs) :test #'equal)) (map-nodes)))
 
+;; The node, what it builds on, and what builds on it — in map order.
+(defun neighbourhood (id)
+  (let ((n (find-node id)))
+    (remove-if-not (lambda (m) (or (eq m n)
+                                   (member (getf m :id) (getf n :prereqs) :test #'equal)
+                                   (member id (getf m :prereqs) :test #'equal)))
+                   (map-nodes))))
+
 ;; Prerequisite depth within the node's own group: 0 with no same-group prereqs.
 (defun node-depth (id &optional seen)
   (let ((n (find-node id)))
@@ -104,13 +126,96 @@
               (1+ (reduce #'max (mapcar (lambda (p) (node-depth p (cons id seen))) same)))
               0)))))
 
-(defun node-ref (id) (str (map-id) "/" id))
+(defun node-ref (id &optional (map (map-id))) (str map "/" id))
+
+;;; ---- Editing the map (by hand or by the model) -------------------------
+
+;; Groups in map order, plus any group a node names that was never declared.
+(defun ensure-group! (id)
+  (unless (or (blankp id) (find-group id))
+    (setf (getf *map* :groups) (append (map-groups) (list (list :id id :compression ""))))))
+
+(defun add-group! (g)
+  (let ((id (slugify (getf* g :id ""))))
+    (unless (or (blankp id) (find-group id))
+      (setf (getf *map* :groups) (append (map-groups) (list (list :id id :compression (trim (getf* g :compression ""))))))
+      (save-map!)
+      id)))
+
+(defun add-node! (node)
+  (let ((n (normalise-node node)))
+    (unless (or (blankp (getf n :id)) (find-node (getf n :id)))
+      (ensure-group! (getf n :group))
+      (setf (getf *map* :nodes) (append (map-nodes) (list n)))
+      (save-map!)
+      n)))
+
+;; Replace the node with the same id, keeping its place in the map.
+(defun update-node! (node)
+  (let* ((n (normalise-node node)) (old (find-node (getf n :id))))
+    (when old
+      (ensure-group! (getf n :group))
+      (setf (getf *map* :nodes) (substitute n old (map-nodes)))
+      (save-map!)
+      n)))
+
+;; Drop the node and every reference to it in other nodes' prereqs.
+(defun remove-node! (id)
+  (when (find-node id)
+    (setf (getf *map* :nodes)
+          (mapcar (lambda (n) (plist-update n :prereqs (remove id (getf n :prereqs) :test #'equal)))
+                  (remove id (map-nodes) :key (lambda (n) (getf n :id)) :test #'equal)))
+    (save-map!)
+    id))
+
+;; Turn a proposal plist (from the model, a form, or the file) into a clean node plist.
+(defun normalise-node (p)
+  (list :id (slugify (getf* p :id (getf* p :title "")))
+        :title (trim (getf* p :title ""))
+        :compression (trim (getf* p :compression ""))
+        :why (trim (getf* p :why ""))
+        :notes (trim (getf* p :notes ""))
+        :group (slugify (getf* p :group "misc"))
+        :prereqs (mapcar #'slugify (remove-if #'blankp (let ((pr (getf p :prereqs)))
+                                                         (if (stringp pr) (split #\, pr) pr))))
+        :era (let ((e (getf p :era)))
+               (cond ((and (integerp e) (/= e 0)) e)
+                     ((and (stringp e) (not (blankp e))) (parse-integer e :junk-allowed t))
+                     (t nil)))))
+
+;;; ---- Views: how the field is being looked at ----------------------------
+
+(defparameter *view-modes* '("map" "outline" "timeline"))
+
+;; The URL says where you are (field, group, idea); the view says how you look at
+;; it, and is remembered per field.
+;; (view-mode) → "map" | "outline" | "timeline"
+(defun view-mode ()
+  (or (getf (find-setting (str "view/" (map-id))) :value) "map"))
+
+(defun set-view-mode! (mode)
+  (when (member mode *view-modes* :test #'equal)
+    (put-setting! (list :key (str "view/" (map-id)) :value mode :at (now-iso)))
+    mode))
+
+;; (visible-nodes "switches") → that group; an idea id → its neighbourhood; else all.
+(defun visible-nodes (&optional focus)
+  (cond ((blankp focus) (map-nodes))
+        ((find-group focus) (group-nodes focus))
+        ((find-node focus) (neighbourhood focus))
+        (t (map-nodes))))
+
+;; Groups, in map order, that have at least one visible node (undeclared ones included).
+(defun visible-groups (nodes)
+  (let ((ids (remove-duplicates (mapcar (lambda (n) (getf n :group)) nodes) :test #'equal :from-end t)))
+    (append (remove-if-not (lambda (g) (member (getf g :id) ids :test #'equal)) (map-groups))
+            (loop for id in ids unless (find-group id) collect (list :id id :compression "")))))
 
 ;;; ---- Levels ------------------------------------------------------------
 
 ;; (node-level "ram") → 0..3, 0 when unset.
-(defun node-level (id)
-  (getf (find-level (node-ref id)) :level 0))
+(defun node-level (id &optional (map (map-id)))
+  (getf (find-level (node-ref id map)) :level 0))
 
 (defun level-name (n) (aref *level-names* (max 0 (min 3 n))))
 
@@ -123,7 +228,7 @@
   (every (lambda (p) (>= (node-level p) 2)) (getf (find-node id) :prereqs)))
 
 ;; Nodes at level 0 whose prereqs are met: what the map should pull you toward.
-(defun grey-frontier ()
+(defun frontier ()
   (remove-if-not (lambda (n) (and (= 0 (node-level (getf n :id)))
                                   (prereqs-met-p (getf n :id))))
                  (map-nodes)))
@@ -142,73 +247,37 @@
                       :ref (node-ref id) :map (map-id) :node-id id
                       :at (now-iso) :text text :feedback feedback)))
 
-;;; ---- Cards (v1 study cards) -------------------------------------------
+;;; ---- Messages: the conversation with the field -------------------------
+;;; One conversation per field, oldest first. A message may be about one node.
+;;; :role is "you", "buddy" or "error"; :changes is the one-line summary of what
+;;; the model changed in the map, when it did.
 
-;; (:principles ("…") :sources ((:title "…" :url "…" :blurb "…")))
-(defun node-card (id) (find-card (node-ref id)))
+(defun map-messages (&optional node)
+  (remove-if-not (lambda (m) (and (equal (getf m :map) (map-id))
+                                  (or (null node) (equal (getf m :node) node))))
+                 (messages)))
 
-(defun set-card! (id principles sources)
-  (put-card! (list :ref (node-ref id) :map (map-id) :node-id id
-                   :at (now-iso) :principles principles :sources sources)))
-
-;;; ---- Scratch (shown, not stored) ---------------------------------------
-
-(defun scratch (key &optional field)
-  (let ((v (gethash key *scratch*)))
-    (if field (getf v field) v)))
-
-(defun set-scratch! (key field value)
-  (setf (gethash key *scratch*) (plist-update (gethash key *scratch*) field value)))
-
-;;; ---- Normalising model-proposed nodes ---------------------------------
-
-;; Turn a proposal plist (from the model or a form) into a clean node plist.
-(defun normalise-node (p)
-  (list :id (slugify (getf* p :id (getf p :title)))
-        :title (trim (getf* p :title ""))
-        :compression (trim (getf* p :compression ""))
-        :why (trim (getf* p :why ""))
-        :group (slugify (getf* p :group "misc"))
-        :prereqs (mapcar #'slugify (remove-if #'blankp (getf p :prereqs)))
-        :era (let ((e (getf p :era)))
-               (cond ((integerp e) e)
-                     ((and (stringp e) (not (blankp e))) (parse-integer e :junk-allowed t))
-                     (t nil)))))
+(defun add-message! (role text &key node changes)
+  (put-message! (list :id (str (now-iso) "#" (length (messages)))
+                      :map (map-id) :node node :role role :at (now-iso)
+                      :text text :changes changes)))
 
 ;;; ---- Settings ----------------------------------------------------------
 
 (defun setting (key) (getf (find-setting key) :value))
 (defun set-setting! (key value) (put-setting! (list :key key :value value :at (now-iso))))
 
-;;; ---- Import the v1 library (data/library.json) ------------------------
-;;; Each v1 topic becomes a node in the "library" map with its study card
-;;; attached, so the hunted sources show on the node page like any other card.
+;;; ---- About: the articulation on the home page --------------------------
 
-(defun v1-source->plist (src)
-  (list :title (getf src :title) :url (getf src :url) :blurb (getf src :blurb)
-        :author (getf src :author) :kind (getf src :kind)))
+(defun about-file () (data-path "about.md"))
 
-;; (import-v1-library) → number of topics imported; writes data/maps/library.lisp
-;; and the cards store. Re-running replaces the library map and its cards.
-(defun import-v1-library (&optional (file (data-path "library.json")))
-  (let* ((json (json->lisp (jzon:parse (uiop:read-file-string file))))
-         (topics (getf json :cards))
-         (nodes (loop for tp in topics
-                      collect (list :id (slugify (getf tp :topic))
-                                    :title (getf tp :topic)
-                                    :compression (or (first (getf tp :firstprinciples)) "")
-                                    :why (or (getf (first (getf tp :sources)) :coreidea) "")
-                                    :group "hunted" :prereqs '() :era nil))))
-    (let ((path (map-file "library")))
-      (when (probe-file path) (delete-file path)))
-    (write-map! "library" "Library" "Topics hunted with v1: first principles and primary sources, one card each."
-                (list (list :id "hunted" :compression "Ideas whose originators have been found."))
-                nodes)
-    (let ((previous (map-id)))
-      (load-map "library")
-      (loop for tp in topics for n in nodes
-            do (set-card! (getf n :id)
-                          (getf tp :firstprinciples)
-                          (mapcar #'v1-source->plist (getf tp :sources))))
-      (load-map previous))
-    (length topics)))
+(defun about-text ()
+  (if (probe-file (about-file))
+      (uiop:read-file-string (about-file) :external-format :utf-8)
+      "# studybuddy\n\nWrite here what this product is for."))
+
+(defun set-about-text! (text)
+  (ensure-directories-exist (about-file))
+  (with-open-file (out (about-file) :direction :output :if-exists :supersede :external-format :utf-8)
+    (write-string text out))
+  text)

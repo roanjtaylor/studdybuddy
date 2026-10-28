@@ -1,14 +1,14 @@
-;;;; L5c — Actions. Every AI action is one defprompt and one defaction: build the
-;;;; context, call ask-structured, store or show the result, redirect back.
-;;;; The level is never changed by any action but Rate.
+;;;; L5c — Actions. One AI channel (ask) that answers and reshapes the map, one AI
+;;;; check of a written explanation, one AI seed of a new field, and the plain
+;;;; hand edits. The level is never changed by any action but Rate.
 
 (in-package :studybuddy)
 
 (defparameter *rules*
   "Rules you must obey:
-1. Theory is learned from the originator, products by using them. Sources are primary: the original paper, essay, lecture, or an authoritative textbook chapter. Never a blog post about the blog post.
-2. Ideas, not tools. A node is one idea with a one-sentence compression.
-3. Nothing is understood until it has been written out and checked. The learner's own written attempt is the core object. You never set the learner's level; you only give evidence.")
+1. Core ideas, not examples. A node is one idea with a one-sentence compression and why it matters. Favour the few ideas that generate the rest; never pad with remixes, tools or trivia.
+2. Theory is learned from the originator, products by using them. When you cite, cite primary sources.
+3. Nothing is understood until it has been written out and checked. You never set the learner's level; you only give evidence.")
 
 ;; Read-time available (#.) so the prompt schemas below can splice it in.
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -17,32 +17,54 @@
               (:title :string "a short name for the idea, five words or fewer")
               (:compression :string "one sentence that compresses the idea")
               (:why :string "one or two sentences on why it matters")
+              (:notes :string "deeper notes in markdown, grown over time; empty string when there are none")
               (:group :string "group id this node belongs to")
               (:prereqs (:array :string) "ids of ideas that must be understood first")
-              (:era :integer "year the idea was first had; negative for BC"))))
+              (:era :integer "year the idea was first had; negative for BC; 0 if unknown"))))
+
+;;; ---- URLs ----------------------------------------------------------------
+
+;;; A directory: /computers → /computers/switches → /computers/switches/ram
+
+(defun field-url (&optional (map (map-id))) (str "/" map))
+(defun group-url (group &optional (map (map-id))) (str "/" map "/" group))
+(defun node-url (id &optional (map (map-id)))
+  (let ((n (find-node id)))
+    (str "/" map "/" (if n (getf n :group) "misc") "/" id)))
+;; Where a focus (group id, idea id, or empty) lives.
+(defun focus-url (focus)
+  (cond ((blankp focus) (field-url))
+        ((find-group focus) (group-url focus))
+        ((find-node focus) (node-url focus))
+        (t (field-url))))
 
 ;;; ---- Context builders --------------------------------------------------
 
 (defun node-context (id)
   (let* ((n (find-node id)) (g (find-group (getf n :group))))
-    (str "Map: " (map-title) " — " (getf *map* :compression) #\Newline
+    (str "Idea in focus: " (getf n :title) " (id " id ")" #\Newline
          "Group: " (getf n :group) " — " (getf g :compression) #\Newline
-         "Idea: " (getf n :title) #\Newline
          "Compression: " (getf n :compression) #\Newline
          "Why it matters: " (getf n :why) #\Newline
+         (unless (blankp (getf n :notes)) (str "Notes so far:" #\Newline (getf n :notes) #\Newline))
          (when (getf n :prereqs)
-           (str "Prerequisite ideas:" #\Newline
+           (str "Builds on:" #\Newline
                 (join #\Newline
                       (mapcar (lambda (p) (let ((pn (find-node p)))
                                             (str "  - " (if pn (getf pn :title) p) ": "
                                                  (if pn (getf pn :compression) "(not in map)"))))
                               (getf n :prereqs)))
-                #\Newline)))))
+                #\Newline))
+         (let ((d (dependents id)))
+           (when d
+             (str "Leads to:" #\Newline
+                  (join #\Newline (mapcar (lambda (m) (str "  - " (getf m :title) ": " (getf m :compression))) d))
+                  #\Newline))))))
 
 (defun attempts-context (id &optional (limit 3))
   (let ((as (subseq (node-attempts id) 0 (min limit (length (node-attempts id))))))
     (if as
-        (str "Learner's past attempts, newest first:" #\Newline
+        (str "Learner's written attempts at this idea, newest first:" #\Newline
              (join #\Newline
                    (mapcar (lambda (a)
                              (str "--- " (getf a :at) #\Newline (getf a :text) #\Newline
@@ -51,31 +73,102 @@
         "The learner has not written about this idea yet.")))
 
 (defun map-context ()
-  (str "Map: " (map-title) " — " (getf *map* :compression) #\Newline
-       "Groups:" #\Newline
+  (str "Field: " (map-title) " — " (getf *map* :compression) #\Newline
+       "Groups (id: compression):" #\Newline
        (join #\Newline (mapcar (lambda (g) (str "  " (getf g :id) ": " (getf g :compression))) (map-groups)))
-       #\Newline "Nodes (id | group | level 0-3 | prereqs | latest verdict):" #\Newline
+       #\Newline "Ideas (id | title | group | learner's level 0-3 | prereqs | era | compression | latest verdict):" #\Newline
        (join #\Newline
              (mapcar (lambda (n)
                        (let ((id (getf n :id)))
-                         (str "  " id " | " (getf n :group) " | " (node-level id) " | "
-                              (join "," (getf n :prereqs)) " | "
+                         (str "  " id " | " (getf n :title) " | " (getf n :group) " | " (node-level id) " | "
+                              (join "," (getf n :prereqs)) " | " (or (getf n :era) "?") " | "
+                              (getf n :compression) " | "
                               (or (getf (getf (latest-attempt id) :feedback) :verdict) "no attempt"))))
-                     (map-nodes)))))
+                     (map-nodes)))
+       #\Newline "Current view: " (view-mode)))
 
-;;; ---- Rate (plain) -------------------------------------------------------
+(defun conversation-context (&optional (limit 10))
+  (let* ((ms (remove "error" (map-messages) :key (lambda (m) (getf m :role)) :test #'equal))
+         (recent (last ms limit)))
+    (if recent
+        (str "Recent conversation, oldest first:" #\Newline
+             (join #\Newline
+                   (mapcar (lambda (m)
+                             (str (if (equal (getf m :role) "you") "Learner" "You")
+                                  (when (getf m :node) (str " (about " (getf m :node) ")")) ": "
+                                  (getf m :text)
+                                  (when (getf m :changes) (str #\Newline "  [map changed: " (getf m :changes) "]"))))
+                           recent)))
+        "No conversation yet.")))
 
-(defaction rate "/action/rate" (node-id level)
-  (set-level! node-id (parse-integer level))
-  (redirect (str "/node/" node-id)))
+;;; ---- Ask: the one channel --------------------------------------------------
 
-;;; ---- Intro seen (plain) -------------------------------------------------
+(defprompt converse
+  :system (str "You are the learner's study buddy, living inside their knowledge map of one field. "
+               "The map is the shared object: groups of ideas; each idea has a one-sentence compression, why it matters, prerequisites, optional deeper notes, and the learner's self-rated level 0-3 with the verdict on their latest written explanation."
+               #\Newline *rules* #\Newline
+               "The learner writes to you to learn and to reshape the map. Do both through the output fields:" #\Newline
+               "- reply: markdown, concise, no preamble, no sign-off. Teach mechanism over vocabulary. Quizzes, questions, comparisons, study plans and answers all go here. Refer to ideas by title. "
+               "When you changed the map, say what you changed in one line at the end." #\Newline
+               "- When the learner asks to change the map, change it: fill gaps, go deeper on one idea (breadth first: three to six sub-ideas one level down, each listing the parent among its prereqs), remove, merge, regroup, rename, or record what they have learned. "
+               "Use add-nodes, update-nodes, remove-node-ids and add-groups. Never describe a change you could make." #\Newline
+               "- update-nodes replaces a node wholesale, so copy every field you are not changing. Use notes for depth the learner has earned: a longer explanation, the distinctions that matter, what to remember. Keep compression one sentence." #\Newline
+               "- When the learner asks to see the field differently, set view.mode: map (groups as columns, prerequisites as lines), outline (groups as reading lists), timeline (by era). "
+               "view.focus takes the learner to one group id or one idea id; empty string stays where they are. When no change of view is asked for, mode is keep and focus is empty." #\Newline
+               "- Ids are lowercase slugs. Group ids must exist in the map or in add-groups. Prereqs must be ids that exist or that you are adding. Era is a year, 0 if unknown." #\Newline
+               "- Never set the learner's level. If asked where they are weak, say so in the reply with reasons.")
+  :schema (:object (:reply :string "markdown for the learner")
+                   (:add-nodes (:array #.*node-schema*) "new ideas; empty when none")
+                   (:update-nodes (:array #.*node-schema*) "full replacements of existing ideas, same id; empty when none")
+                   (:remove-node-ids (:array :string) "ids to remove; empty when none")
+                   (:add-groups (:array (:object (:id :string) (:compression :string))) "new groups; empty when none")
+                   (:view (:object (:mode (:enum "keep" "map" "outline" "timeline"))
+                                   (:focus :string "group id, idea id, or empty string")))))
 
-(defaction intro-done "/action/intro-done" ()
-  (set-setting! "intro-seen" t)
-  (redirect "/"))
+;; Apply what the model asked for → (values one-line-summary-or-NIL focus-or-NIL).
+(defun apply-changes! (r)
+  (let ((done '()) (focus nil))
+    (dolist (g (getf r :add-groups))
+      (when (add-group! g) (push (str "group " (getf g :id)) done)))
+    (dolist (n (getf r :add-nodes))
+      (when (add-node! n) (push (str "+ " (getf n :title)) done)))
+    (dolist (n (getf r :update-nodes))
+      (when (update-node! n) (push (str "~ " (getf n :title)) done)))
+    (dolist (id (getf r :remove-node-ids))
+      (when (remove-node! id) (push (str "- " id) done)))
+    (let ((v (getf r :view)))
+      (when (and v (not (equal (getf v :mode) "keep")) (set-view-mode! (getf v :mode)))
+        (push (str "view " (getf v :mode)) done))
+      (when (and v (not (blankp (getf v :focus)))
+                 (or (find-group (getf v :focus)) (find-node (getf v :focus))))
+        (setf focus (getf v :focus))
+        (push (str "→ " focus) done)))
+    (values (when done (join ", " (nreverse done))) focus)))
 
-;;; ---- Write --------------------------------------------------------------
+;; `here` is the focus the learner asked from: "" (whole field), a group id, or an
+;; idea id. The answer lands back there unless the model moved the view.
+(defaction ask-buddy "/action/ask" (map-name here text search)
+  (unless (select-map map-name) (return-from ask-buddy (not-found "field")))
+  (let* ((node (and (not (blankp here)) (find-node here) here))
+         (group (and (not (blankp here)) (not node) (find-group here) here))
+         (back here))
+    (unless (blankp text)
+      (add-message! "you" (trim text) :node node)
+      (handler-case
+          (let* ((context (str (map-context) #\Newline #\Newline
+                               (when group (str "The learner is looking at group: " group #\Newline #\Newline))
+                               (when node (str (node-context node) #\Newline (attempts-context node) #\Newline #\Newline))
+                               (conversation-context) #\Newline #\Newline
+                               "Learner says:" #\Newline (trim text)))
+                 (r (ask-structured 'converse context :search (not (blankp search)))))
+            (multiple-value-bind (changes focus) (apply-changes! r)
+              (add-message! "buddy" (strip-quotes (getf r :reply)) :node node :changes changes)
+              (when focus (setf back focus))))
+        (llm-error (e)
+          (add-message! "error" (llm-error-message e) :node node))))
+    (redirect (focus-url back))))
+
+;;; ---- Write: check an explanation ---------------------------------------
 
 (defprompt check-explanation
   :system (str "You are checking a learner's written explanation of one idea from a knowledge map." #\Newline
@@ -98,139 +191,72 @@
         :verdict (strip-quotes (getf fb :verdict))
         :suggested-level (getf fb :suggested-level)))
 
-(defaction attempt "/action/attempt" (node-id text)
+(defaction attempt "/action/attempt" (map-name node-id text)
+  (unless (select-map map-name) (return-from attempt (not-found "field")))
   (unless (blankp text)
-    (let ((feedback (ask-structured 'check-explanation
-                                    (str (node-context node-id) #\Newline
-                                         "Learner wrote:" #\Newline text))))
-      (add-attempt! node-id (trim text) (clean-feedback feedback))))
-  (redirect (str "/node/" node-id)))
+    (handler-case
+        (let ((feedback (ask-structured 'check-explanation
+                                        (str "Field: " (map-title) #\Newline (node-context node-id) #\Newline
+                                             "Learner wrote:" #\Newline text))))
+          (add-attempt! node-id (trim text) (clean-feedback feedback)))
+      (llm-error (e) (add-message! "error" (llm-error-message e) :node node-id))))
+  (redirect (node-url node-id)))
 
-;;; ---- Questions ---------------------------------------------------------
+;;; ---- Rate (plain) -------------------------------------------------------
 
-(defprompt questions
-  :system (str "You set questions that force a learner to write out one idea properly." #\Newline
-               *rules* #\Newline
-               "Give five questions, each answerable in a paragraph of writing, ordered from the one that exposes the biggest gap in the learner's past attempts to the most refined. "
-               "Questions about mechanism, not vocabulary. No yes/no questions.")
-  :schema (:object (:questions (:array :string))))
+(defaction rate "/action/rate" (map-name node-id level)
+  (unless (select-map map-name) (return-from rate (not-found "field")))
+  (set-level! node-id (parse-integer level))
+  (redirect (node-url node-id)))
 
-(defaction questions "/action/questions" (node-id)
-  (let ((r (ask-structured 'questions (str (node-context node-id) #\Newline (attempts-context node-id)))))
-    (set-scratch! (node-ref node-id) :questions (getf r :questions)))
-  (redirect (str "/node/" node-id)))
+;;; ---- Hand edits (plain) ---------------------------------------------------
 
-;;; ---- Quiz ----------------------------------------------------------------
+(defaction edit-node "/action/edit-node" (map-name node-id title compression why notes group prereqs era)
+  (unless (select-map map-name) (return-from edit-node (not-found "field")))
+  (update-node! (list :id node-id :title title :compression compression :why why :notes notes
+                      :group group :prereqs prereqs :era era))
+  (redirect (node-url node-id)))
 
-(defprompt quiz
-  :system (str "You write a short multiple-choice quiz on one idea and its neighbours in a knowledge map." #\Newline
-               *rules* #\Newline
-               "Five questions. Four options each, exactly one correct; the answer field repeats the correct option's text exactly. "
-               "Wrong options must be plausible confusions, not jokes. The explanation says why the right one is right in one sentence.")
-  :schema (:object (:questions (:array (:object (:prompt :string)
-                                                (:options (:array :string))
-                                                (:answer :string)
-                                                (:explanation :string))))))
+(defaction add-node "/action/add-node" (map-name title group)
+  (unless (select-map map-name) (return-from add-node (not-found "field")))
+  (let ((n (add-node! (list :title title :group (if (blankp group) "misc" group)))))
+    (redirect (if n (node-url (getf n :id)) (field-url)))))
 
-(defun neighbours-context (id)
-  (let ((d (dependents id)))
-    (when d
-      (str "Ideas that build on this one:" #\Newline
-           (join #\Newline (mapcar (lambda (m) (str "  - " (getf m :title) ": " (getf m :compression))) d))))))
+(defaction remove-node "/action/remove-node" (map-name node-id)
+  (unless (select-map map-name) (return-from remove-node (not-found "field")))
+  (let ((group (getf (find-node node-id) :group)))
+    (remove-node! node-id)
+    (redirect (if group (group-url group) (field-url)))))
 
-(defaction quiz "/action/quiz" (node-id)
-  (let ((r (ask-structured 'quiz (str (node-context node-id) #\Newline (neighbours-context node-id)))))
-    (set-scratch! (node-ref node-id) :quiz (getf r :questions)))
-  (redirect (str "/node/" node-id)))
-
-;;; ---- Gaps ----------------------------------------------------------------
-
-(defprompt gaps
-  :system (str "You review a learner's whole knowledge map: every idea, their self-rated level and the verdict on their latest written attempt." #\Newline
-               *rules* #\Newline
-               "weak-nodes: ideas rated 2 or 3 whose verdict or prerequisites suggest the rating is optimistic, or ideas whose low level blocks the most other ideas. Give the node id exactly as listed and a one-sentence reason. At most six. "
-               "missing-nodes: ideas the map needs but does not have, each as a full node with a group id from the list and prerequisites from the existing ids. At most six. "
-               "Prefer fewer, sharper proposals.")
-  :schema (:object (:weak-nodes (:array (:object (:id :string) (:reason :string))))
-                   (:missing-nodes (:array #.*node-schema*))))
-
-(defaction gaps "/action/gaps" (map-name)
-  (declare (ignore map-name))
-  (let ((r (ask-structured 'gaps (map-context))))
-    (set-scratch! (map-id) :gaps r))
+(defaction about "/action/about" (text)
+  (set-about-text! (or text ""))
   (redirect "/"))
 
-;;; ---- Hunt sources (the v1 card) ---------------------------------------
-
-(defprompt hunt-sources
-  :system (str "You are a source hunter for a self-directed learner. Given one idea, find the canonical primary sources and the first principles behind it." #\Newline
-               *rules* #\Newline
-               "Use web search to verify that each source exists and that the URL is the original or the most authoritative copy. "
-               "principles: three to five first principles, each one sentence. "
-               "sources: three to five canonical sources — the original paper, essay, lecture, or authoritative textbook chapter. "
-               "Each source's blurb is three to five sentences giving the gist so the learner has it before clicking through. "
-               "Reject listicles, tutorials, marketing, and summaries of summaries.")
-  :schema (:object (:principles (:array :string))
-                   (:sources (:array (:object (:title :string) (:url :string) (:blurb :string))))))
-
-(defaction hunt "/action/hunt" (node-id)
-  (let ((r (ask-with-search 'hunt-sources (node-context node-id))))
-    (set-card! node-id (getf r :principles) (getf r :sources)))
-  (redirect (str "/node/" node-id)))
-
-;;; ---- Expand a node into sub-ideas -------------------------------------
-
-(defprompt expand
-  :system (str "You break one idea in a knowledge map into the three to six sub-ideas a learner must write out to truly own it." #\Newline
-               *rules* #\Newline
-               "Each child is a node: an idea, not a topic heading; a one-sentence compression; why it matters. "
-               "Every child lists the parent id among its prereqs, plus any existing map ids it needs. "
-               "Use the parent's group id unless a listed group fits better. "
-               "Go one level deeper than the parent, not several; breadth first.")
-  :schema (:object (:children (:array #.*node-schema*))))
-
-(defaction expand "/action/expand" (node-id)
-  (let ((r (ask-structured 'expand
-                           (str (node-context node-id) #\Newline
-                                "Parent id: " node-id #\Newline
-                                "Existing ids in this map: " (join ", " (mapcar (lambda (n) (getf n :id)) (map-nodes)))
-                                #\Newline "Group ids: " (join ", " (mapcar (lambda (g) (getf g :id)) (map-groups)))))))
-    (set-scratch! (node-ref node-id) :children (getf r :children)))
-  (redirect (str "/node/" node-id)))
-
-;;; ---- Accept a proposed node (plain) ------------------------------------
-
-(defaction accept-node "/action/accept-node" (id title compression why group prereqs era)
-  (let ((node (normalise-node (list :id id :title title :compression compression :why why
-                                    :group group :prereqs (split #\, (or prereqs "")) :era era))))
-    (unless (find-node (getf node :id))
-      (append-node! node))
-    (redirect (str "/node/" (getf node :id)))))
-
-;;; ---- Seed a map ---------------------------------------------------------
+;;; ---- Seed a field: breadth first, with web search ------------------------
 
 (defprompt seed-map
-  :system (str "You design a knowledge map of a field for one self-directed learner: the ideas, in prerequisite order, that let them rebuild the field from first principles." #\Newline
+  :system (str "You design a knowledge map of a field for one self-directed learner: the core ideas, in prerequisite order, that let them rebuild the field from first principles." #\Newline
                *rules* #\Newline
+               "Breadth first: cover the whole field at one level of depth rather than any part deeply. "
                "Use web search to check the ideas and dates against primary sources. "
                "groups: five to eight, each a lowercase-slug id and a one-sentence compression, ordered so prerequisites flow from the first group to the last. "
-               "nodes: thirty to fifty ideas, five to eight per group, each with the schema fields; prereqs are ids of other nodes in this map only; era is the year the idea was first had. "
-               "title: the map's short title. compression: the field in one sentence.")
+               "nodes: twenty-five to forty ideas, four to six per group, each with the schema fields; notes empty; prereqs are ids of other nodes in this map only; era is the year the idea was first had. "
+               "title: the field's short title. compression: the field in one sentence.")
   :schema (:object (:title :string)
                    (:compression :string)
                    (:groups (:array (:object (:id :string) (:compression :string))))
                    (:nodes (:array #.*node-schema*))))
 
 (defaction seed "/action/seed" (field note)
-  (let* ((id (slugify field))
-         (r (ask-with-search 'seed-map
-                             (str "Field: " field #\Newline
-                                  "Learner's note: " (or note "") #\Newline
-                                  "Map id: " id))))
+  (when (blankp field) (return-from seed (redirect "/fields")))
+  (let ((id (slugify field)))
     (when (map-exists-p id) (setf id (str id "-" (get-universal-time))))
-    (write-map! id (getf* r :title field) (getf r :compression)
-                (mapcar (lambda (g) (list :id (slugify (getf g :id)) :compression (getf g :compression)))
-                        (getf r :groups))
-                (mapcar #'normalise-node (getf r :nodes)))
-    (load-map id)
-    (redirect "/")))
+    (let ((r (ask-with-search 'seed-map
+                              (str "Field: " field #\Newline
+                                   "Learner's note (what they already know, and why they want it): " (or note "") #\Newline
+                                   "Map id: " id))))
+      (write-map! id (getf* r :title field) (getf r :compression)
+                  (mapcar (lambda (g) (list :id (slugify (getf g :id)) :compression (getf g :compression)))
+                          (getf r :groups))
+                  (mapcar #'normalise-node (getf r :nodes)))
+      (redirect (field-url id)))))
