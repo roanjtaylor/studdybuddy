@@ -1,5 +1,4 @@
-node_modules
-.next
+*.fasl
 .env
 .env.local
 *.log
