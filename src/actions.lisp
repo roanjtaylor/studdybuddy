@@ -84,8 +84,7 @@
                               (join "," (getf n :prereqs)) " | " (or (getf n :era) "?") " | "
                               (getf n :compression) " | "
                               (or (getf (getf (latest-attempt id) :feedback) :verdict) "no attempt"))))
-                     (map-nodes)))
-       #\Newline "Current view: " (view-mode)))
+                     (map-nodes)))))
 
 (defun conversation-context (&optional (limit 10))
   (let* ((ms (remove "error" (map-messages) :key (lambda (m) (getf m :role)) :test #'equal))
@@ -113,21 +112,17 @@
                "- When the learner asks to change the map, change it: fill gaps, go deeper on one idea (breadth first: three to six sub-ideas one level down, each listing the parent among its prereqs), remove, merge, regroup, rename, or record what they have learned. "
                "Use add-nodes, update-nodes, remove-node-ids and add-groups. Never describe a change you could make." #\Newline
                "- update-nodes replaces a node wholesale, so copy every field you are not changing. Use notes for depth the learner has earned: a longer explanation, the distinctions that matter, what to remember. Keep compression one sentence." #\Newline
-               "- When the learner asks to see the field differently, set view.mode: map (groups as columns, prerequisites as lines), outline (groups as reading lists), timeline (by era). "
-               "view.focus takes the learner to one group id or one idea id; empty string stays where they are. When no change of view is asked for, mode is keep and focus is empty." #\Newline
                "- Ids are lowercase slugs. Group ids must exist in the map or in add-groups. Prereqs must be ids that exist or that you are adding. Era is a year, 0 if unknown." #\Newline
                "- Never set the learner's level. If asked where they are weak, say so in the reply with reasons.")
   :schema (:object (:reply :string "markdown for the learner")
                    (:add-nodes (:array #.*node-schema*) "new ideas; empty when none")
                    (:update-nodes (:array #.*node-schema*) "full replacements of existing ideas, same id; empty when none")
                    (:remove-node-ids (:array :string) "ids to remove; empty when none")
-                   (:add-groups (:array (:object (:id :string) (:compression :string))) "new groups; empty when none")
-                   (:view (:object (:mode (:enum "keep" "map" "outline" "timeline"))
-                                   (:focus :string "group id, idea id, or empty string")))))
+                   (:add-groups (:array (:object (:id :string) (:compression :string))) "new groups; empty when none")))
 
-;; Apply what the model asked for → (values one-line-summary-or-NIL focus-or-NIL).
+;; Apply what the model asked for → one-line summary, or NIL when nothing changed.
 (defun apply-changes! (r)
-  (let ((done '()) (focus nil))
+  (let ((done '()))
     (dolist (g (getf r :add-groups))
       (when (add-group! g) (push (str "group " (getf g :id)) done)))
     (dolist (n (getf r :add-nodes))
@@ -136,22 +131,14 @@
       (when (update-node! n) (push (str "~ " (getf n :title)) done)))
     (dolist (id (getf r :remove-node-ids))
       (when (remove-node! id) (push (str "- " id) done)))
-    (let ((v (getf r :view)))
-      (when (and v (not (equal (getf v :mode) "keep")) (set-view-mode! (getf v :mode)))
-        (push (str "view " (getf v :mode)) done))
-      (when (and v (not (blankp (getf v :focus)))
-                 (or (find-group (getf v :focus)) (find-node (getf v :focus))))
-        (setf focus (getf v :focus))
-        (push (str "→ " focus) done)))
-    (values (when done (join ", " (nreverse done))) focus)))
+    (when done (join ", " (nreverse done)))))
 
 ;; `here` is the focus the learner asked from: "" (whole field), a group id, or an
-;; idea id. The answer lands back there unless the model moved the view.
-(defaction ask-buddy "/action/ask" (map-name here text search)
+;; idea id. `view` is the tab to land back on.
+(defaction ask-buddy "/action/ask" (map-name here text search view)
   (unless (select-map map-name) (return-from ask-buddy (not-found "field")))
   (let* ((node (and (not (blankp here)) (find-node here) here))
-         (group (and (not (blankp here)) (not node) (find-group here) here))
-         (back here))
+         (group (and (not (blankp here)) (not node) (find-group here) here)))
     (unless (blankp text)
       (add-message! "you" (trim text) :node node)
       (handler-case
@@ -161,12 +148,12 @@
                                (conversation-context) #\Newline #\Newline
                                "Learner says:" #\Newline (trim text)))
                  (r (ask-structured 'converse context :search (not (blankp search)))))
-            (multiple-value-bind (changes focus) (apply-changes! r)
-              (add-message! "buddy" (strip-quotes (getf r :reply)) :node node :changes changes)
-              (when focus (setf back focus))))
+            (add-message! "buddy" (strip-quotes (getf r :reply)) :node node :changes (apply-changes! r)))
         (llm-error (e)
           (add-message! "error" (llm-error-message e) :node node))))
-    (redirect (focus-url back))))
+    (redirect (str (focus-url here)
+                   (when (member view '("map" "timeline" "interact") :test #'equal)
+                     (str "?view=" view))))))
 
 ;;; ---- Write: check an explanation ---------------------------------------
 

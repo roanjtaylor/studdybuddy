@@ -36,10 +36,10 @@
           (hidden "map-name" (map-id)) (hidden "here" here) (hidden "text" text)
           (:button :type "submit" :class "chip" label))))
 
-(defcomponent ask-box (placeholder chips &optional (here ""))
+(defcomponent ask-box (placeholder chips &optional (here "") (view ""))
   (html (:section :class "ask" :id "ask"
           (:form :method "post" :action "/action/ask" :class "ask-form"
-            (hidden "map-name" (map-id)) (hidden "here" here)
+            (hidden "map-name" (map-id)) (hidden "here" here) (hidden "view" view)
             (:textarea :name "text" :rows 2 :placeholder placeholder :required t :spellcheck "false")
             (:div :class "ask-row"
               (:label :class "check" (:input :type "checkbox" :name "search" :value "1") " search the web")
@@ -71,6 +71,11 @@
             (dolist (m shown) (message-view m))))))
 
 ;;; ---- Views of a field -----------------------------------------------------
+;;; Two things are chosen in the URL: the tab (?view=map|timeline|interact) and how
+;;; far in you look (?depth=breadth|depth). Breadth is the groups; depth is every idea.
+
+(defparameter *views* '("map" "timeline" "interact"))
+(defparameter *depths* '("breadth" "depth"))
 
 (defparameter *col-w* 220)
 (defparameter *row-h* 76)
@@ -80,19 +85,6 @@
 (defun nodes-in-group (nodes group-id)
   (stable-sort (remove group-id nodes :key (lambda (n) (getf n :group)) :test-not #'equal)
                #'< :key (lambda (n) (node-depth (getf n :id)))))
-
-;; → hash id → (x y), total width, total height. Columns are groups; rows are
-;; prerequisite depth within the group (ties keep map order).
-(defun map-positions (nodes groups)
-  (let ((pos (make-hash-table :test #'equal)) (col 0) (maxrows 0))
-    (dolist (g groups)
-      (let ((gn (nodes-in-group nodes (getf g :id))))
-        (loop for n in gn for row from 0
-              do (setf (gethash (getf n :id) pos)
-                       (list (+ 20 (* col *col-w*)) (+ 76 (* row *row-h*)))))
-        (setf maxrows (max maxrows (length gn))))
-      (incf col))
-    (values pos (+ 40 (* col *col-w*)) (+ 96 (* maxrows *row-h*)))))
 
 ;; (wrap-words "a long title here" 8) → ("a long" "title" "here…") at most 2 lines
 (defun wrap-words (s width &optional (max-lines 2))
@@ -108,76 +100,265 @@
                 (list (truncate-string (join " " (nthcdr (1- max-lines) lines)) width)))
         lines)))
 
-(defcomponent map-view-svg (nodes)
+;; The svg every picture is drawn in; map.js pans and zooms it.
+(defmacro with-canvas ((w h &optional height) &body body)
+  `(html (:div :id "map-wrap"
+           (:svg :id "map" :xmlns "http://www.w3.org/2000/svg"
+                 :viewBox (str "0 0 " ,w " " ,h) :width "100%" :height ,height
+             (:g :id "viewport" ,@body)))))
+
+;;; -- Depth map: every idea, a column per group, prerequisites as lines --------
+
+;; → hash id → (x y), total width, total height. Rows are prerequisite depth in the group.
+(defun map-positions (nodes groups)
+  (let ((pos (make-hash-table :test #'equal)) (col 0) (maxrows 0))
+    (dolist (g groups)
+      (let ((gn (nodes-in-group nodes (getf g :id))))
+        (loop for n in gn for row from 0
+              do (setf (gethash (getf n :id) pos)
+                       (list (+ 20 (* col *col-w*)) (+ 76 (* row *row-h*)))))
+        (setf maxrows (max maxrows (length gn))))
+      (incf col))
+    (values pos (+ 40 (* col *col-w*)) (+ 96 (* maxrows *row-h*)))))
+
+(defcomponent depth-map (nodes)
   (let ((groups (visible-groups nodes)))
     (multiple-value-bind (pos w h) (map-positions nodes groups)
-      (let ((frontier (mapcar (lambda (n) (getf n :id)) (frontier))))
-        (html
-          (:div :id "map-wrap"
-            (:svg :id "map" :xmlns "http://www.w3.org/2000/svg"
-                  :viewBox (str "0 0 " w " " h) :width "100%" :height "70vh"
-              (:g :id "viewport"
-                (loop for g in groups for col from 0
-                      do (let ((x (+ 20 (* col *col-w*))))
-                           (html (:a :href (group-url (getf g :id))
-                                   (:text :x x :y 30 :class "group-title" (getf g :id)))
-                                 (:text :x x :y 50 :class "group-comp"
-                                        (truncate-string (getf* g :compression "") 34)))))
-                (dolist (n nodes)
-                  (let ((to (gethash (getf n :id) pos)))
-                    (dolist (p (getf n :prereqs))
-                      (let ((from (gethash p pos)))
-                        (when (and from to)
-                          (html (:line :class "edge"
-                                       :x1 (+ (first from) (/ *box-w* 2)) :y1 (+ (second from) *box-h*)
-                                       :x2 (+ (first to) (/ *box-w* 2)) :y2 (second to))))))))
-                (dolist (n nodes)
-                  (let* ((id (getf n :id)) (p (gethash id pos)) (x (first p)) (y (second p))
-                         (lvl (node-level id)))
-                    (html (:a :href (node-url id)
-                            (:rect :x x :y y :width *box-w* :height *box-h* :rx 6
-                                   :class (str "box lvl-" lvl (when (member id frontier :test #'equal) " frontier")))
-                            (:title (getf n :title) " — " (getf n :compression))
-                            (:text :x (+ x 10) :y (+ y 23) :class "box-title"
-                              (loop for line in (wrap-words (getf n :title) 27) for i from 0
-                                    do (html (:tspan :x (+ x 10) :dy (if (= i 0) 0 16) line))))))))))
-          (:p :class "legend"
-            (loop for i from 0 to 3 do (html (:span :class (str "lvl lvl-" i) (level-name i)) " "))
-            (:span :class "quiet" "thick border = next: prerequisites met, not yet written up. Drag to pan, wheel to zoom."))))))))
+      (with-canvas (w h)
+        (loop for g in groups for col from 0
+              do (let ((x (+ 20 (* col *col-w*))))
+                   (html (:a :href (group-url (getf g :id))
+                           (:text :x x :y 30 :class "group-title" (getf g :id)))
+                         (:text :x x :y 50 :class "group-comp"
+                                (truncate-string (getf* g :compression "") 34)))))
+        (dolist (n nodes)
+          (let ((to (gethash (getf n :id) pos)))
+            (dolist (p (getf n :prereqs))
+              (let ((from (gethash p pos)))
+                (when (and from to)
+                  (html (:line :class "edge"
+                               :x1 (+ (first from) (/ *box-w* 2)) :y1 (+ (second from) *box-h*)
+                               :x2 (+ (first to) (/ *box-w* 2)) :y2 (second to))))))))
+        (dolist (n nodes)
+          (let* ((id (getf n :id)) (p (gethash id pos)) (x (first p)) (y (second p)))
+            (html (:a :href (node-url id)
+                    (:rect :x x :y y :width *box-w* :height *box-h* :rx 6
+                           :class (str "box lvl-" (node-level id)))
+                    (:title (getf n :title) " — " (getf n :compression))
+                    (:text :x (+ x 10) :y (+ y 23) :class "box-title"
+                      (loop for line in (wrap-words (getf n :title) 27) for i from 0
+                            do (html (:tspan :x (+ x 10) :dy (if (= i 0) 0 16) line))))))))))))
 
-(defcomponent outline-view (nodes)
-  (html (:div :class "outline"
-          (dolist (g (visible-groups nodes))
-            (html (:section :class "outline-group"
-                    (:h3 (:a :href (group-url (getf g :id)) (getf g :id))
-                         " " (:span :class "quiet small" (getf g :compression)))
-                    (:ul :class "plain"
-                      (dolist (n (nodes-in-group nodes (getf g :id)))
-                        (html (:li (node-link (getf n :id))
-                                   (:div :class "quiet small" (getf n :compression))))))))))))
+;;; -- Breadth map: one box per group, left to right in prerequisite order -------
 
-(defcomponent timeline-view (nodes)
-  (let ((sorted (stable-sort (copy-list nodes) #'< :key (lambda (n) (or (getf n :era) most-positive-fixnum)))))
-    (html (:table :class "timeline"
-            (dolist (n sorted)
-              (html (:tr
-                      (:td :class "era" (or (getf n :era) "—"))
-                      (:td (node-link (getf n :id))
-                           (:div :class "quiet small" (getf n :compression)))
-                      (:td (group-tag (getf n :group))))))))))
+(defparameter *gbox-w* 230)
+(defparameter *gbox-h* 104)
+(defparameter *gap* 40)
 
-;; The toggles keep you on the same URL and change only how it is drawn.
-(defcomponent view-bar (self-url)
-  (let ((mode (view-mode)))
-    (html (:div :class "viewbar"
-            (dolist (m *view-modes*)
-              (html (:a :class (str "toggle" (when (equal m mode) " on")) :href (str self-url "?view=" m) m)))))))
+;; The groups a group's ideas build on, other than itself.
+(defun group-prereqs (nodes group-id)
+  (remove group-id
+          (remove-duplicates
+           (loop for n in nodes
+                 when (equal (getf n :group) group-id)
+                   append (loop for p in (getf n :prereqs)
+                                for pn = (find-node p)
+                                when pn collect (getf pn :group)))
+           :test #'equal)
+          :test #'equal))
 
-(defcomponent field-view (nodes)
-  (cond ((null nodes) (html (:p :class "quiet" "No ideas here yet. Ask for some below.")))
-        ((equal (view-mode) "outline") (outline-view nodes))
-        ((equal (view-mode) "timeline") (timeline-view nodes))
-        (t (map-view-svg nodes))))
+;; Column of a group: 0 with nothing before it, else one past its latest prerequisite group.
+(defun group-layer (nodes group-id &optional seen)
+  (let ((ps (remove-if (lambda (g) (member g seen :test #'equal)) (group-prereqs nodes group-id))))
+    (if ps
+        (1+ (reduce #'max (mapcar (lambda (g) (group-layer nodes g (cons group-id seen))) ps)))
+        0)))
+
+;; Prerequisites run left to right, or top to bottom when `vertical` (a narrow pane).
+(defcomponent breadth-map (nodes &optional vertical)
+  (let* ((groups (visible-groups nodes))
+         (pos (make-hash-table :test #'equal))
+         (fill (make-hash-table)) (layers 0) (rows 0)
+         (bw *gbox-w*) (bh *gbox-h*))
+    (dolist (g groups)
+      (let* ((layer (group-layer nodes (getf g :id))) (row (gethash layer fill 0)))
+        (setf (gethash (getf g :id) pos) (list layer row)
+              (gethash layer fill) (1+ row)
+              layers (max layers (1+ layer))
+              rows (max rows (1+ row)))))
+    (flet ((px (g) (destructuring-bind (layer row) (gethash (getf g :id) pos)
+                     (+ 20 (* (if vertical row layer) (+ bw *gap*)))))
+           (py (g) (destructuring-bind (layer row) (gethash (getf g :id) pos)
+                     (+ 20 (* (if vertical layer row) (+ bh *gap*))))))
+      (with-canvas ((+ 40 (* (if vertical rows layers) (+ bw *gap*)))
+                    (+ 40 (* (if vertical layers rows) (+ bh *gap*))))
+        (dolist (g groups)
+          (dolist (p (group-prereqs nodes (getf g :id)))
+            (let ((from (find p groups :key (lambda (x) (getf x :id)) :test #'equal)))
+              (when from
+                (html (:line :class "edge"
+                             :x1 (+ (px from) (if vertical (/ bw 2) bw))
+                             :y1 (+ (py from) (if vertical bh (/ bh 2)))
+                             :x2 (+ (px g) (if vertical (/ bw 2) 0))
+                             :y2 (+ (py g) (if vertical 0 (/ bh 2)))))))))
+        (dolist (g groups)
+          (let* ((id (getf g :id)) (x (px g)) (y (py g))
+                 (mine (nodes-in-group nodes id))
+                 (done (count-if (lambda (n) (>= (node-level (getf n :id)) 2)) mine)))
+            (html (:a :href (group-url id)
+                    (:rect :x x :y y :width bw :height bh :rx 8 :class "box group-box")
+                    (:text :x (+ x 14) :y (+ y 26) :class "group-title gb-text" id)
+                    (:text :x (+ x 14) :y (+ y 46) :class "box-title gb-text"
+                      (loop for line in (wrap-words (getf* g :compression "") 32 3) for i from 0
+                            do (html (:tspan :x (+ x 14) :dy (if (= i 0) 0 15) line))))
+                    (:text :x (+ x 14) :y (+ y bh -12) :class "group-comp gb-meta"
+                           (length mine) " ideas · " done " explained")))))))))
+
+;;; -- Timeline: years along the x axis, a lane per group -----------------------
+
+(defparameter *tl-left* 170)
+(defparameter *tl-right* 1150)
+(defparameter *tl-top* 44)
+
+;; A tick every 10 years, or wider when the span is long.
+(defun tick-step (span) (cond ((<= span 150) 10) ((<= span 600) 50) (t 500)))
+
+;; Greedy rows for labels along a line: each item takes the first row whose last label
+;; has ended before it starts. → list of (item x row), and the number of rows used.
+(defun pack-rows (items x-of width-of)
+  (let ((ends '()) (placed '()))
+    (dolist (it items)
+      (let* ((x (funcall x-of it))
+             (row (or (position-if (lambda (e) (<= e x)) ends) (length ends)))
+             (end (+ x (funcall width-of it))))
+        (if (< row (length ends))
+            (setf (nth row ends) end)
+            (setf ends (append ends (list end))))
+        (push (list it x row) placed)))
+    (values (nreverse placed) (max 1 (length ends)))))
+
+(defcomponent timeline (nodes depth)
+  (let* ((dated (remove-if-not (lambda (n) (getf n :era)) nodes))
+         (groups (remove-if-not (lambda (g) (some (lambda (n) (equal (getf n :group) (getf g :id))) dated))
+                                (visible-groups nodes)))
+         (eras (mapcar (lambda (n) (getf n :era)) dated)))
+    (if (null dated)
+        (html (:p :class "quiet" "No ideas here have a date yet."))
+        (let* ((step (tick-step (- (reduce #'max eras) (reduce #'min eras))))
+               (lo (* step (floor (reduce #'min eras) step)))
+               (hi (let ((h (* step (ceiling (reduce #'max eras) step)))) (if (= h lo) (+ lo step) h)))
+               (deep (equal depth "depth"))
+               (lanes '()) (y *tl-top*))
+          (flet ((x (year) (round (+ *tl-left* (* (- *tl-right* *tl-left*) (/ (- year lo) (- hi lo)))))))
+            ;; Lane = (group nodes-by-year placed-items height top).
+            (dolist (g groups)
+              (let ((gn (stable-sort (remove (getf g :id) dated :key (lambda (n) (getf n :group)) :test-not #'equal)
+                                     #'< :key (lambda (n) (getf n :era)))))
+                (multiple-value-bind (placed rows)
+                    (if deep
+                        (pack-rows gn (lambda (n) (x (getf n :era)))
+                                   (lambda (n) (+ 16 (* 6.5 (length (getf n :title))))))
+                        (values nil 0))
+                  (let ((height (if deep (+ 16 (* 22 rows)) 62)))
+                    (push (list g gn placed height y) lanes)
+                    (incf y height)))))
+            (setf lanes (nreverse lanes))
+            (html
+              (with-canvas (1200 (+ y 16))
+                (loop for year from lo to hi by step
+                      do (html (:line :class "gridline" :x1 (x year) :y1 (- *tl-top* 8) :x2 (x year) :y2 y)
+                               (:text :x (x year) :y (- *tl-top* 16) :class "tick" :text-anchor "middle" year)))
+                (dolist (lane lanes)
+                  (destructuring-bind (g gn placed height ly) lane
+                    (declare (ignore height))
+                    (html (:line :class "lane" :x1 20 :y1 ly :x2 *tl-right* :y2 ly)
+                          (:a :href (group-url (getf g :id))
+                            (:text :x 20 :y (+ ly 22) :class "group-title" (getf g :id)))
+                          (if deep
+                              (dolist (it placed)
+                                (destructuring-bind (n nx row) it
+                                  (html (:a :href (node-url (getf n :id))
+                                          (:circle :cx nx :cy (+ ly 18 (* 22 row)) :r 5
+                                                   :class (str "dot lvl-" (node-level (getf n :id))))
+                                          (:title (getf n :era) " — " (getf n :compression))
+                                          (:text :x (+ nx 10) :y (+ ly 22 (* 22 row)) :class "box-title"
+                                                 (getf n :title))))))
+                              (let* ((first-year (getf (first gn) :era))
+                                     (last-year (getf (car (last gn)) :era))
+                                     (a (x first-year)) (b (max (x last-year) (+ a 8))))
+                                (html (:a :href (group-url (getf g :id))
+                                        (:rect :x a :y (+ ly 12) :width (- b a) :height 14 :rx 4 :class "span")
+                                        (:title (getf* g :compression ""))
+                                        (:text :x a :y (+ ly 46) :class "group-comp"
+                                               first-year "–" last-year " · "
+                                               (truncate-string (getf* g :compression "") 70)))))))))))
+            (let ((undated (- (length nodes) (length dated))))
+              (when (> undated 0)
+                (html (:p :class "quiet small" undated " ideas have no date and are left out here.")))))))))
+
+;;; -- Tabs ---------------------------------------------------------------------
+
+(defun view-url (self-url view depth) (str self-url "?view=" view "&depth=" depth))
+
+(defun capitalise (s) (str (string-upcase (subseq s 0 1)) (subseq s 1)))
+
+(defcomponent view-button (self-url label view depth on)
+  (html (:form :method "get" :action self-url :class "inline"
+          (hidden "view" view) (hidden "depth" depth)
+          (:button :type "submit" :class (and on "on") label))))
+
+;; An iOS-style switch that is really a GET form: pressing it submits the other
+;; state. `on` is a form evaluated once; the hidden fields are (name value) pairs.
+;;
+;;   (ios-switch (deep "/computers" :off "Breadth" :on "Depth")
+;;     ("view" view) ("depth" (if deep "breadth" "depth")))
+(defmacro ios-switch ((on action &key (off-label "Off") (on-label "On")) &body hidden-fields)
+  (with-gensyms (on?)
+    `(let ((,on? ,on))
+       (html (:form :method "get" :action ,action :class "inline"
+               ,@(loop for (name value) in hidden-fields collect `(hidden ,name ,value))
+               (:button :type "submit" :class "switch" :role "switch"
+                        :aria-checked (if ,on? "true" "false")
+                        :title (str "Show " (if ,on? ,off-label ,on-label))
+                 (:span :class (and (not ,on?) "on") ,off-label)
+                 (:span :class "track" (:span :class "knob"))
+                 (:span :class (and ,on? "on") ,on-label)))))))
+
+;; One switch between the two depths: pressing it goes to the other one.
+(defcomponent depth-toggle (self-url view depth)
+  (let ((deep (equal depth "depth")))
+    (ios-switch (deep self-url :off-label "Breadth" :on-label "Depth")
+      ("view" view)
+      ("depth" (if deep "breadth" "depth")))))
+
+(defcomponent view-bar (self-url view depth)
+  (html (:div :class "viewbar"
+          (dolist (v *views*)
+            (view-button self-url (capitalise v) v depth (equal v view)))
+          (:span :class "gap")
+          (depth-toggle self-url view depth))))
+
+(defcomponent map-view (nodes depth &optional vertical)
+  (cond ((null nodes) (html (:p :class "quiet" "No ideas here yet.")))
+        ((equal depth "depth") (depth-map nodes))
+        (t (breadth-map nodes vertical))))
+
+(defcomponent chat (focus view)
+  (html (:section :class "chat"
+          (:div :class "chat-log"
+            (let ((ms (map-messages)))
+              (if ms
+                  (dolist (m ms) (message-view m))
+                  (html (:p :class "quiet" "Ask anything about this field, or tell me how to change the map.")))))
+          (ask-box "Ask about this field, or tell me how to change the map…" nil focus view))))
+
+(defcomponent field-view (nodes view depth focus)
+  (html (:div :class (str "stage view-" view)
+          (cond ((equal view "timeline") (timeline nodes depth))
+                ((equal view "interact")
+                 (html (:div :class "pane-map" (map-view nodes depth t))
+                       (:div :class "pane-chat" (chat focus view))))
+                (t (map-view nodes depth))))))
 
 (defcomponent map-warnings ()
   (let ((bad (check-map)))
@@ -218,55 +399,33 @@
 
 ;;; ---- A field, or one group of it -----------------------------------------
 
-(defparameter *field-chips*
-  '(("What's missing?" "Read the whole map. What core ideas of this field are missing? Add the ones that matter most, breadth first, and tell me why.")
-    ("Where am I weak?" "Looking at my levels and verdicts, where am I weakest, and what should I write out next? Don't change the map.")
-    ("What next?" "Given what I can already explain, which one idea should I take on next, and why that one?")
-    ("Go deeper here" "Take what I'm looking at and go one level deeper: add the sub-ideas I'd need to write out to own it, breadth first.")
-    ("As a timeline" "Show this as a timeline.")
-    ("As an outline" "Show this as an outline.")))
+;; Shared by the field page (focus "") and the group page (focus = group id or idea id).
+;; A whole field opens at breadth; a group or an idea's neighbourhood opens at depth.
+(defun render-field (focus view depth self-url)
+  (let* ((view (if (member view *views* :test #'equal) view "map"))
+         (depth (cond ((member depth *depths* :test #'equal) depth)
+                      ((blankp focus) "breadth")
+                      (t "depth")))
+         (group (and (not (blankp focus)) (find-group focus)))
+         (nodes (visible-nodes focus))
+         (*page-class* "field")
+         (*crumbs* (append (list (cons "fields" "/fields")
+                                 (cons (map-id) (and group (field-url))))
+                           (when group (list (list (getf group :id))))))
+         (*nav-extra* (html (:span :class "tagline" (if group (getf group :compression) (getf *map* :compression)))
+                            (view-bar self-url view depth))))
+    (layout (if group (str (getf group :id) " · " (map-title)) (map-title))
+      (html (unless group (map-warnings))
+            (field-view nodes view depth focus)))))
 
-;; Shared by the field page (focus "") and the group page (focus = group id).
-(defun render-field (focus view all self-url)
-  (when view (set-view-mode! view))
-  (let ((group (and (not (blankp focus)) (find-group focus)))
-        (nodes (visible-nodes focus)))
-    (let ((*ask-href* "#ask")
-          (*crumbs* (append (list (cons "fields" "/fields")
-                                  (cons (map-id) (and group (field-url))))
-                            (when group (list (list (getf group :id)))))))
-      (layout (if group (str (getf group :id) " · " (map-title)) (map-title))
-        (html (:header :class "titlebar"
-                (:div (:h1 (if group (getf group :id) (map-title)))
-                      (:p :class "tagline" (if group (getf group :compression) (getf *map* :compression))))
-                (:p :class "quiet small" (length nodes) " ideas · "
-                    (count-if (lambda (n) (>= (node-level (getf n :id)) 2)) nodes) " explained"
-                    (when group (html " · " (:a :href (field-url) "whole field")))))
-              (unless group (map-warnings))
-              (view-bar self-url)
-              (field-view nodes)
-              (ask-box (if group
-                           "Ask about this group, or tell me how to change it: go deeper, add what's missing, split it, rename it…"
-                           "Ask anything about this field, or tell me how to change the map: add what's missing, go deeper on a group, regroup, show it differently…")
-                       *field-chips* focus)
-              (transcript (map-messages) :limit (if all nil 12) :all-href (str self-url "?all=1"))
-              (:details :class "edit"
-                (:summary "Add an idea by hand")
-                (:form :method "post" :action "/action/add-node" :class "ask-form"
-                  (hidden "map-name" (map-id))
-                  (:label "Title" (:input :type "text" :name "title" :required t))
-                  (:label "Group" (:input :type "text" :name "group" :value focus
-                                          :placeholder (join ", " (mapcar (lambda (g) (getf g :id)) (map-groups)))))
-                  (:button :type "submit" "Add"))))))))
-
-(defpage field-page "/:name" (name view all around)
+(defpage field-page "/:name" (name view depth around)
   (unless (select-map name) (return-from field-page (not-found "field")))
-  (render-field (if (and around (find-node around)) around "") view all (field-url)))
+  (render-field (if (and around (find-node around)) around "") view depth (field-url)))
 
 ;; /computers/switches is the group; /computers/ram forgives a dropped group.
-(defpage group-page "/:name/:group" (name group view all)
+(defpage group-page "/:name/:group" (name group view depth)
   (unless (select-map name) (return-from group-page (not-found "field")))
-  (cond ((find-group group) (render-field group view all (group-url group)))
+  (cond ((find-group group) (render-field group view depth (group-url group)))
         ((find-node group) (redirect (node-url group)))
         (t (not-found "group"))))
 

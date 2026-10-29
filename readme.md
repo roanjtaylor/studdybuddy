@@ -5,8 +5,8 @@ Study the core ideas of a field, not the infinite examples of them. A map of eac
 ## The workflow
 
 1. **Create a field** (`/fields`). Name it, say what you know and why you want it. The model researches it with web search and lays out the core ideas breadth first, in prerequisite order.
-2. **See the whole field** (`/computers`), or one group of it (`/computers/switches`). Switch between map (groups as columns, prerequisites as lines), outline and timeline; the choice is remembered per field. Your levels colour every view.
-3. **Ask** — the one channel. The Ask button in the nav jumps to the ask box on every field, group and idea page. Your words go with the map, where you are, your attempts and the recent conversation. The model answers in markdown *and* may change the map: add ideas, replace them (notes grow here), remove, regroup, switch the view, or take you to a group or idea. What it changed is shown under its reply. Chips are canned asks posting to the same action.
+2. **See the whole field** (`/computers`), or one group of it (`/computers/switches`). Three tabs: **Map** (groups as boxes in prerequisite order), **Timeline** (years along the x axis, a lane per group) and **Interact** (the map in the left half, a chat with the model in the right). A **Breadth / Depth** switch sets how far in you look: breadth is the groups, depth is every idea. It is in the URL (`?view=timeline&depth=depth`); a whole field opens at breadth, a group at depth. Your levels colour the ideas.
+3. **Interact** — the one channel to the model. Your words go with the map, where you are, your attempts and the recent conversation. The model answers in markdown *and* may change the map: add ideas, replace them (notes grow here), remove, regroup. What it changed is shown under its reply. Idea pages have their own ask box.
 4. **Go deep** (`/computers/switches/ram`). Write your explanation cold, get right / missing / wrong, rate yourself by hand. Edit or remove the idea by hand if you prefer.
 
 URLs are a directory, shown as a path under the nav: `studybuddy / fields / computers / switches / ram`. Pages: `/`, `/fields`, `/:field`, `/:field/:group`, `/:field/:group/:idea`; `/:field?around=<idea>` shows one idea with what it builds on and leads to. Actions: ask, attempt, rate, edit-node, add-node, remove-node, about, seed.
@@ -22,11 +22,11 @@ Built bottom-up, one small language per layer, each live-editable from the REPL:
 | L2 | `src/web.lisp` | `defpage`, `defaction`, `layout`, `redirect`; routes are a table so a re-evaluated form is live |
 | L3 | `src/store.lisp` | `defstore`: a list of plists in memory, mirrored to a file on every `put!` |
 | L4 | `src/llm.lisp` | `defprompt`, `ask`, `ask-structured`, `ask-with-search` — structured answers as plists, never prose |
-| L5 | `src/nodes.lisp`, `src/pages.lisp`, `src/actions.lisp` | Field, Node, Level, Attempt, Message, View; the four pages; the `converse` prompt and `apply-changes!` |
+| L5 | `src/nodes.lisp`, `src/pages.lisp`, `src/actions.lisp` | Field, Node, Level, Attempt, Message; the pages; the `converse` prompt and `apply-changes!` |
 
 ## Data
 
-Lisp data in files you can read and edit by hand. `data/maps/<field>.lisp` is the map: one `(:map …)`, then `(:group …)` and `(:node …)` forms, one per line; nodes carry `:notes` for depth grown over time. The model's edits rewrite this file. Everything that is yours lives beside it, keyed by `"<field>/<node-id>"`: `levels.lisp`, `attempts.lisp` (append-only), `messages.lisp` (the conversation per field, append-only), `settings.lisp` (the remembered view per field). `data/about.md` is the home page. Back it all up by copying the folder.
+Lisp data in files you can read and edit by hand. `data/maps/<field>.lisp` is the map: one `(:map …)`, then `(:group …)` and `(:node …)` forms, one per line; nodes carry `:notes` for depth grown over time. The model's edits rewrite this file. Everything that is yours lives beside it, keyed by `"<field>/<node-id>"`: `levels.lisp`, `attempts.lisp` (append-only), `messages.lisp` (the conversation per field, append-only), `settings.lisp`. `data/about.md` is the home page. Back it all up by copying the folder.
 
 `data/library.json` and `data/cards.lisp` are the v1 export and its hunted sources; nothing reads them any more.
 

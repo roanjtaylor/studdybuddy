@@ -18,6 +18,8 @@
   "Top-bar links, (label . href).")
 (defvar *ask-href* "/fields"
   "Where the nav's Ask button goes. Pages with an ask box bind it to \"#ask\".")
+(defvar *nav-extra* nil "Already-rendered HTML for the right of the nav (a field's subtitle and view buttons).")
+(defvar *page-class* nil "Class on <body>; \"field\" makes the content fill the window.")
 (defvar *crumbs* '()
   "The directory path of the current page, ((label . href) …), shown under the nav.")
 
@@ -105,6 +107,12 @@
 
 ;;; ---- The page shell ----------------------------------------------------
 
+;; (static-url "style.css") → "/static/style.css?v=3969000000" — the file's write time,
+;; so a browser never keeps a stale stylesheet after an edit.
+(defun static-url (name)
+  (let ((path (root-path (str "static/" name))))
+    (str "/static/" name "?v=" (or (ignore-errors (file-write-date path)) 0))))
+
 ;; (layout "Title" part…) — parts are already-rendered HTML strings.
 (defun layout (title &rest parts)
   (html (:raw "<!doctype html>")
@@ -112,8 +120,8 @@
       (:head (:meta :charset "utf-8")
              (:meta :name "viewport" :content "width=device-width, initial-scale=1")
              (:title title " · StudyBuddy")
-             (:link :rel "stylesheet" :href "/static/style.css"))
-      (:body
+             (:link :rel "stylesheet" :href (static-url "style.css")))
+      (:body :class *page-class*
         (:nav :class "top"
           (:a :class "brand" :href "/" "StudyBuddy")
           (dolist (link *nav*)
@@ -122,9 +130,10 @@
                   (:a :class (and *crumbs* "current") :href (cdr link) (car link))))
           (loop for (label . href) in (cdr *crumbs*)
                 do (html (:span :class "sep" "/")
-                         (if href (html (:a :href href label)) (html (:span :class "current" label))))))
+                         (if href (html (:a :href href label)) (html (:span :class "current" label)))))
+          (when *nav-extra* (html (:raw *nav-extra*))))
         (:main (dolist (p parts) (html (:raw p))))
-        (:script :src "/static/map.js")))))
+        (:script :src (static-url "map.js"))))))
 
 ;;; ---- Server ------------------------------------------------------------
 

@@ -12,6 +12,8 @@
   --l3: #c2410c;
   --l3-fg: #ffffff;
   --warn: #b45309;
+  --sel: #0891b2;
+  --sel-fg: #ffffff;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -28,6 +30,8 @@
     --l3: #fb923c;
     --l3-fg: #111;
     --warn: #f59e0b;
+    --sel: #22d3ee;
+    --sel-fg: #0f0f0e;
   }
 }
 
@@ -54,10 +58,11 @@ p { margin: .4rem 0; }
 .crumb { font-size: .85rem; color: var(--muted); margin: 0 0 .25rem; }
 .crumb a { text-decoration: none; }
 
+/* A fixed-height bar: nothing inside it (buttons, the switch) may grow it. */
 nav.top {
-  display: flex; gap: 1.25rem; align-items: baseline;
-  padding: .75rem 1rem; border-bottom: 1px solid var(--line);
-  font-size: .9rem;
+  display: flex; gap: 1.25rem; align-items: center;
+  height: 3rem; flex-shrink: 0; padding: 0 1rem; border-bottom: 1px solid var(--line);
+  font-size: .9rem; white-space: nowrap;
 }
 nav.top a { text-decoration: none; color: var(--muted); }
 nav.top a:hover { color: var(--fg); }
@@ -111,15 +116,50 @@ details.edit textarea { width: 100%; margin-top: .5rem; }
 .lvl-1 { background: var(--l1); }
 .lvl-2 { background: var(--l2); color: #111; }
 .lvl-3 { background: var(--l3); color: var(--l3-fg); }
-.legend { font-size: .85rem; }
 
-/* View bar */
-.viewbar { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; margin: .5rem 0 .75rem; font-size: .85rem; }
-.viewbar .toggle { text-decoration: none; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: .15rem .7rem; }
-.viewbar .toggle.on { color: var(--fg); border-color: var(--fg); }
-.viewbar .focus { margin-left: .75rem; color: var(--muted); }
+/* Navbar extras: subtitle, then the view buttons on the right */
+nav.top .tagline { font-size: .8rem; margin-left: .75rem; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+nav.top .viewbar { margin: 0 0 0 1rem; display: flex; gap: .5rem; align-items: center; flex-shrink: 0; }
+nav.top .viewbar form.inline { display: inline-flex; align-items: center; }
+nav.top .viewbar button { padding: .2rem .7rem; font-size: .85rem; line-height: 1.3; height: 1.9rem; }
+nav.top .viewbar .gap { width: 1rem; }
+nav.top .viewbar button.on { background: var(--sel); color: var(--sel-fg); border-color: var(--sel); }
 
-/* Map */
+/* The iOS-style switch: a label each side, the live one in cyan; the track goes cyan
+   when the right-hand state is on and the knob slides across. */
+nav.top button.switch { display: inline-flex; align-items: center; gap: .5rem; border: 0; background: none; padding: 0; height: 1.9rem; color: var(--muted); }
+nav.top button.switch:hover { border: 0; }
+nav.top button.switch .on { color: var(--sel); font-weight: 600; }
+nav.top .track {
+  position: relative; flex-shrink: 0; width: 2.5rem; height: 1.5rem; border-radius: 999px;
+  background: #c8c8c2; box-shadow: inset 0 0 0 1px rgba(0,0,0,.06); transition: background .2s;
+}
+nav.top .knob {
+  position: absolute; top: .125rem; left: .125rem; width: 1.25rem; height: 1.25rem; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); transition: left .2s;
+}
+nav.top button[aria-checked=true] .track { background: var(--sel); }
+nav.top button[aria-checked=true] .knob { left: 1.125rem; }
+nav.top button.switch:focus-visible .track { outline: 2px solid var(--sel); outline-offset: 2px; }
+
+/* Field pages: the content fills the window under the navbar */
+body.field { height: 100vh; display: flex; flex-direction: column; }
+body.field main { flex: 1; min-height: 0; max-width: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+/* 200px either side on desktop pulls the content to the middle; narrower windows get it back. */
+.stage { flex: 1; min-height: 0; display: flex; gap: 1rem; padding: 1rem 200px; }
+@media (max-width: 1100px) { .stage { padding: 1rem; } }
+.stage #map-wrap { flex: 1; min-width: 0; height: 100%; }
+.stage svg#map { width: 100%; height: 100%; }
+.stage.view-timeline #map-wrap { overflow: auto; cursor: auto; }
+.stage.view-timeline svg#map { height: auto; }
+.pane-map, .pane-chat { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+.pane-map #map-wrap { height: auto; flex: 1; }
+.chat { display: flex; flex-direction: column; flex: 1; min-height: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.chat-log { flex: 1; overflow-y: auto; padding: .5rem 1rem; }
+.chat .ask { margin: 0; padding: .75rem 1rem; border-top: 1px solid var(--line); }
+body.field > main > .warn { margin: .5rem 1rem 0; }
+
+/* Map and timeline */
 #map-wrap { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; cursor: grab; }
 #map-wrap:active { cursor: grabbing; }
 svg#map { display: block; user-select: none; }
@@ -131,16 +171,21 @@ svg .box.lvl-0 { fill: var(--l0); }
 svg .box.lvl-1 { fill: var(--l1); }
 svg .box.lvl-2 { fill: var(--l2); }
 svg .box.lvl-3 { fill: var(--l3); }
-svg .box.frontier { stroke: var(--accent); stroke-width: 3; }
+/* Breadth boxes: light grey with black text in either theme. */
+svg rect.box.group-box { fill: #e4e4df; stroke: #bdbdb6; }
+svg a:hover rect.box.group-box { stroke: #1a1a1a; }
 svg .box-title { font-size: 12px; fill: var(--fg); pointer-events: none; }
 svg a:hover .box { stroke: var(--fg); }
-
-/* Outline and timeline */
-.outline { display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: 0 1.5rem; }
-.outline-group h3 a { text-decoration: none; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .9rem; }
-table.timeline { border-collapse: collapse; width: 100%; margin-top: .5rem; }
-table.timeline td { padding: .5rem .5rem; border-top: 1px solid var(--line); vertical-align: top; }
-table.timeline td.era { font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--muted); width: 4rem; }
+svg .gridline { stroke: var(--line); stroke-dasharray: 2 4; }
+svg .lane { stroke: var(--line); }
+svg .tick { font-size: 11px; fill: var(--muted); }
+svg .span { fill: var(--l2); }
+svg .dot { stroke: var(--fg); stroke-width: 1; }
+svg .dot.lvl-0 { fill: var(--l0); }
+svg .dot.lvl-1 { fill: var(--l1); }
+svg .dot.lvl-2 { fill: var(--l2); }
+svg .dot.lvl-3 { fill: var(--l3); }
+svg a:hover .dot, svg a:hover .span { stroke: var(--fg); stroke-width: 2; }
 .nodelink { text-decoration: none; border-bottom: 1px solid var(--line); }
 
 /* Ask */
@@ -202,3 +247,7 @@ pre.wrote { white-space: pre-wrap; font: inherit; margin: .5rem 0; }
 
 label { display: block; margin: .75rem 0; font-size: .9rem; color: var(--muted); }
 label input, label textarea { display: block; margin-top: .25rem; }
+
+/* Breadth box text (after the generic svg text rules, so these win) */
+svg text.gb-text, svg .group-title.gb-text, svg .box-title.gb-text { fill: #1a1a1a; }
+svg text.gb-meta, svg .group-comp.gb-meta { fill: #444; }

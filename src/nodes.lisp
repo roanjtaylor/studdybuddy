@@ -183,20 +183,7 @@
                      ((and (stringp e) (not (blankp e))) (parse-integer e :junk-allowed t))
                      (t nil)))))
 
-;;; ---- Views: how the field is being looked at ----------------------------
-
-(defparameter *view-modes* '("map" "outline" "timeline"))
-
-;; The URL says where you are (field, group, idea); the view says how you look at
-;; it, and is remembered per field.
-;; (view-mode) → "map" | "outline" | "timeline"
-(defun view-mode ()
-  (or (getf (find-setting (str "view/" (map-id))) :value) "map"))
-
-(defun set-view-mode! (mode)
-  (when (member mode *view-modes* :test #'equal)
-    (put-setting! (list :key (str "view/" (map-id)) :value mode :at (now-iso)))
-    mode))
+;;; ---- What is in view ----------------------------------------------------
 
 ;; (visible-nodes "switches") → that group; an idea id → its neighbourhood; else all.
 (defun visible-nodes (&optional focus)
@@ -223,15 +210,6 @@
 (defun set-level! (id n)
   (put-level! (list :ref (node-ref id) :map (map-id) :node-id id
                     :level (max 0 (min 3 n)) :at (now-iso))))
-
-(defun prereqs-met-p (id)
-  (every (lambda (p) (>= (node-level p) 2)) (getf (find-node id) :prereqs)))
-
-;; Nodes at level 0 whose prereqs are met: what the map should pull you toward.
-(defun frontier ()
-  (remove-if-not (lambda (n) (and (= 0 (node-level (getf n :id)))
-                                  (prereqs-met-p (getf n :id))))
-                 (map-nodes)))
 
 ;;; ---- Attempts ----------------------------------------------------------
 

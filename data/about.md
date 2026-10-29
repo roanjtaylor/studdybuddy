@@ -1,13 +1,9 @@
-# StudyBuddy
+Understanding core ideas is 80% of being a field expert.
 
-Learn core ideas from a field, rather than 10x embodiments of them.
+Use this to create fields, map breadth-first, and study depth-first.
 
-Create a field, map it breadth-first, go depth-first as required.
+Write lots to pin ideas with words, with LLM feedback.
 
-Write to iterate my understanding, with instant feedback and generated artifacts.
+Expand the map, pin useful resources, make it your own.
 
-AI-native product interface to interact with this data.
-
-Follow my curiosity by shaping the content to me, rather than me to the pre-made content.
-
-Generate custom environments, rather than mass-produced content.
+Shape the environment to suit my learning.

@@ -1,5 +1,5 @@
-// Two things only: pan/zoom for the SVG map, and a "thinking…" state while a
-// form that talks to the model is in flight (Ctrl/Cmd+Enter submits a textarea).
+// Pan/zoom for the SVG, the chat scrolled to its newest message, and a "thinking…"
+// state while a form that talks to the model is in flight (Ctrl/Cmd+Enter submits).
 (function () {
   document.querySelectorAll('form').forEach(function (form) {
     form.addEventListener('submit', function () { form.classList.add('pending'); });
@@ -10,9 +10,12 @@
     });
   });
 
+  var log = document.querySelector('.chat-log');
+  if (log) log.scrollTop = log.scrollHeight;
+
   var svg = document.getElementById('map');
   var view = document.getElementById('viewport');
-  if (!svg || !view) return;
+  if (!svg || !view || svg.closest('.view-timeline')) return;
 
   var tx = 0, ty = 0, scale = 1;
   var dragging = false, moved = false, lastX = 0, lastY = 0;
